@@ -11,6 +11,76 @@ extension DNSResolver {
     /// Concurrent queue used for DNS resolutions
     private static let resolverQueue = DispatchQueue(label: "DNSResolverQueue", qos: .default, attributes: .concurrent)
 
+    /// 使用 DoH 解析端点（如果配置启用）
+    /// - Parameters:
+    ///   - endpoints: 待解析的端点列表
+    ///   - dohConfig: DoH 配置（为 nil 或未启用时使用系统 DNS）
+    /// - Returns: 解析结果列表
+    static func resolveSyncWithDoH(
+        endpoints: [Endpoint?],
+        dohConfig: DoHConfiguration?
+    ) -> [Result<Endpoint, DNSResolutionError>?] {
+        // 如果 DoH 未启用，使用传统解析
+        guard let config = dohConfig, config.isEnabled else {
+            return resolveSync(endpoints: endpoints)
+        }
+
+        let isAllEndpointsAlreadyResolved = endpoints.allSatisfy { maybeEndpoint -> Bool in
+            return maybeEndpoint?.hasHostAsIPAddress() ?? true
+        }
+
+        if isAllEndpointsAlreadyResolved {
+            return endpoints.map { endpoint in
+                return endpoint.map { .success($0) }
+            }
+        }
+
+        let resolver = DoHResolver(configuration: config)
+
+        return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<Endpoint, DNSResolutionError>? in
+            guard let endpoint = endpoint else { return nil }
+
+            if endpoint.hasHostAsIPAddress() {
+                return .success(endpoint)
+            }
+
+            guard case .name(let hostname, _) = endpoint.host else {
+                return .success(endpoint)
+            }
+
+            do {
+                let (ipv4, ipv6) = try resolver.resolveSync(hostname: hostname)
+
+                // 优先使用 IPv4
+                if let ipv4Address = ipv4 {
+                    return .success(Endpoint(host: .ipv4(ipv4Address), port: endpoint.port))
+                } else if let ipv6Address = ipv6 {
+                    return .success(Endpoint(host: .ipv6(ipv6Address), port: endpoint.port))
+                } else {
+                    // DoH 解析失败，检查是否启用降级
+                    if config.fallbackEnabled {
+                        return Result { try DNSResolver.resolveSync(endpoint: endpoint) }
+                            .mapError { error -> DNSResolutionError in
+                                // swiftlint:disable:next force_cast
+                                return error as! DNSResolutionError
+                            }
+                    }
+                    return .failure(DNSResolutionError(errorCode: EAI_NONAME, address: hostname))
+                }
+            } catch {
+                // DoH 解析失败，检查是否启用降级
+                if config.fallbackEnabled {
+                    return Result { try DNSResolver.resolveSync(endpoint: endpoint) }
+                        .mapError { error -> DNSResolutionError in
+                            // swiftlint:disable:next force_cast
+                            return error as! DNSResolutionError
+                        }
+                }
+                return .failure(DNSResolutionError(errorCode: EAI_FAIL, address: hostname))
+            }
+        }
+    }
+
     static func resolveSync(endpoints: [Endpoint?]) -> [Result<Endpoint, DNSResolutionError>?] {
         let isAllEndpointsAlreadyResolved = endpoints.allSatisfy { maybeEndpoint -> Bool in
             return maybeEndpoint?.hasHostAsIPAddress() ?? true
@@ -138,7 +208,7 @@ extension Endpoint {
 }
 
 /// An error type describing DNS resolution error
-public struct DNSResolutionError: LocalizedError {
+public struct DNSResolutionError: LocalizedError, Sendable {
     public let errorCode: Int32
     public let address: String
 

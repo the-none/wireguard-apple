@@ -8,9 +8,9 @@ import os
 class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private lazy var adapter: WireGuardAdapter = {
-        return WireGuardAdapter(with: self) { logLevel, message in
+        return WireGuardAdapter(with: self, logHandler: { logLevel, message in
             wg_log(logLevel.osLogLevel, message: message)
-        }
+        }, dohConfiguration: DoHSettingsManager.shared.configuration)
     }()
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {

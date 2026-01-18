@@ -50,6 +50,9 @@ public class WireGuardAdapter {
     /// Log handler closure.
     private let logHandler: LogHandler
 
+    /// DoH configuration for DNS resolution.
+    private let dohConfiguration: DoHConfiguration?
+
     /// Private queue used to synchronize access to `WireGuardAdapter` members.
     private let workQueue = DispatchQueue(label: "WireGuardAdapterWorkQueue")
 
@@ -129,9 +132,11 @@ public class WireGuardAdapter {
     /// - Parameter packetTunnelProvider: an instance of `NEPacketTunnelProvider`. Internally stored
     ///   as a weak reference.
     /// - Parameter logHandler: a log handler closure.
-    public init(with packetTunnelProvider: NEPacketTunnelProvider, logHandler: @escaping LogHandler) {
+    /// - Parameter dohConfiguration: optional DoH configuration for DNS resolution.
+    public init(with packetTunnelProvider: NEPacketTunnelProvider, logHandler: @escaping LogHandler, dohConfiguration: DoHConfiguration? = nil) {
         self.packetTunnelProvider = packetTunnelProvider
         self.logHandler = logHandler
+        self.dohConfiguration = dohConfiguration
 
         setupLogHandler()
     }
@@ -343,7 +348,7 @@ public class WireGuardAdapter {
     /// - Returns: The list of resolved endpoints.
     private func resolvePeers(for tunnelConfiguration: TunnelConfiguration) throws -> [Endpoint?] {
         let endpoints = tunnelConfiguration.peers.map { $0.endpoint }
-        let resolutionResults = DNSResolver.resolveSync(endpoints: endpoints)
+        let resolutionResults = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration)
         let resolutionErrors = resolutionResults.compactMap { result -> DNSResolutionError? in
             if case .failure(let error) = result {
                 return error
@@ -390,7 +395,8 @@ public class WireGuardAdapter {
     private func makeSettingsGenerator(with tunnelConfiguration: TunnelConfiguration) throws -> PacketTunnelSettingsGenerator {
         return PacketTunnelSettingsGenerator(
             tunnelConfiguration: tunnelConfiguration,
-            resolvedEndpoints: try self.resolvePeers(for: tunnelConfiguration)
+            resolvedEndpoints: try self.resolvePeers(for: tunnelConfiguration),
+            logHandler: self.logHandler
         )
     }
 

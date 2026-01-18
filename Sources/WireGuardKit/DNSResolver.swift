@@ -15,13 +15,16 @@ extension DNSResolver {
     /// - Parameters:
     ///   - endpoints: 待解析的端点列表
     ///   - dohConfig: DoH 配置（为 nil 或未启用时使用系统 DNS）
+    ///   - logHandler: 可选的日志处理器
     /// - Returns: 解析结果列表
     static func resolveSyncWithDoH(
         endpoints: [Endpoint?],
-        dohConfig: DoHConfiguration?
+        dohConfig: DoHConfiguration?,
+        logHandler: ((String) -> Void)? = nil
     ) -> [Result<Endpoint, DNSResolutionError>?] {
         // 如果 DoH 未启用，使用传统解析
         guard let config = dohConfig, config.isEnabled else {
+            logHandler?("DoH: disabled, using system DNS")
             return resolveSync(endpoints: endpoints)
         }
 
@@ -30,12 +33,13 @@ extension DNSResolver {
         }
 
         if isAllEndpointsAlreadyResolved {
+            logHandler?("DoH: all endpoints already resolved")
             return endpoints.map { endpoint in
                 return endpoint.map { .success($0) }
             }
         }
 
-        let resolver = DoHResolver(configuration: config)
+        let resolver = DoHResolver(configuration: config, logHandler: logHandler)
 
         return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<Endpoint, DNSResolutionError>? in
             guard let endpoint = endpoint else { return nil }

@@ -348,7 +348,9 @@ public class WireGuardAdapter {
     /// - Returns: The list of resolved endpoints.
     private func resolvePeers(for tunnelConfiguration: TunnelConfiguration) throws -> [Endpoint?] {
         let endpoints = tunnelConfiguration.peers.map { $0.endpoint }
-        let resolutionResults = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration)
+        let resolutionResults = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) { [weak self] message in
+            self?.logHandler(.verbose, message)
+        }
         let resolutionErrors = resolutionResults.compactMap { result -> DNSResolutionError? in
             if case .failure(let error) = result {
                 return error

@@ -15,10 +15,12 @@ typealias EndpointResolutionResult = Result<(Endpoint, Endpoint), DNSResolutionE
 class PacketTunnelSettingsGenerator {
     let tunnelConfiguration: TunnelConfiguration
     let resolvedEndpoints: [Endpoint?]
+    let logHandler: ((WireGuardLogLevel, String) -> Void)?
 
-    init(tunnelConfiguration: TunnelConfiguration, resolvedEndpoints: [Endpoint?]) {
+    init(tunnelConfiguration: TunnelConfiguration, resolvedEndpoints: [Endpoint?], logHandler: ((WireGuardLogLevel, String) -> Void)? = nil) {
         self.tunnelConfiguration = tunnelConfiguration
         self.resolvedEndpoints = resolvedEndpoints
+        self.logHandler = logHandler
     }
 
     func endpointUapiConfiguration() -> (String, [EndpointResolutionResult?]) {
@@ -134,10 +136,10 @@ class PacketTunnelSettingsGenerator {
             let (ip4pAddress, ip4pPort) = resolvedEndpoint.convertIP4P(ipv6Address: ipv6Address)
             let ip4pEndpoint = Endpoint(host: .ipv4(IPv4Address(ip4pAddress)!), port: NWEndpoint.Port(ip4pPort)!)
             if case .ipv4 = ip4pEndpoint.host {
-                wg_log(.info, message: "IP4P parsed endpoint: \(ip4pAddress):\(ip4pPort)")
+                logHandler?(.verbose, "IP4P: converted [\(ipv6Address)]:0 to \(ip4pAddress):\(ip4pPort)")
                 return ip4pEndpoint
             } else {
-                wg_log(.info, message: "IP4P parse failure:\n raw IPv6 \(resolvedEndpoint.stringRepresentation)\n IP4P parsed result \(ip4pAddress):\(ip4pPort)")
+                logHandler?(.error, "IP4P: failed to convert [\(ipv6Address)]:0")
                 return resolvedEndpoint
             }
         } else {

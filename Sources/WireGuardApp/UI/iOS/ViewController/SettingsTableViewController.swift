@@ -11,6 +11,9 @@ class SettingsTableViewController: UITableViewController {
         case goBackendVersion
         case exportZipArchive
         case viewLog
+        case dohEnabled
+        case dohProvider
+        case dohFallback
 
         var localizedUIString: String {
             switch self {
@@ -18,11 +21,15 @@ class SettingsTableViewController: UITableViewController {
             case .goBackendVersion: return tr("settingsVersionKeyWireGuardGoBackend")
             case .exportZipArchive: return tr("settingsExportZipButtonTitle")
             case .viewLog: return tr("settingsViewLogButtonTitle")
+            case .dohEnabled: return tr("tunnelInterfaceDoHEnabled")
+            case .dohProvider: return tr("tunnelInterfaceDoHProvider")
+            case .dohFallback: return tr("tunnelInterfaceDoHFallback")
             }
         }
     }
 
     let settingsFieldsBySection: [[SettingsFields]] = [
+        [.dohEnabled, .dohProvider, .dohFallback],
         [.iosAppVersion, .goBackendVersion],
         [.exportZipArchive],
         [.viewLog]
@@ -47,10 +54,12 @@ class SettingsTableViewController: UITableViewController {
 
         tableView.estimatedRowHeight = 44
         tableView.rowHeight = UITableView.automaticDimension
-        tableView.allowsSelection = false
+        tableView.allowsSelection = true
 
         tableView.register(KeyValueCell.self)
         tableView.register(ButtonCell.self)
+        tableView.register(SwitchCell.self)
+        tableView.register(ChevronCell.self)
 
         tableView.tableFooterView = UIImageView(image: UIImage(named: "wireguard.pdf"))
     }
@@ -127,10 +136,12 @@ extension SettingsTableViewController {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch section {
         case 0:
-            return tr("settingsSectionTitleAbout")
+            return tr("tunnelSectionTitleDoH")
         case 1:
-            return tr("settingsSectionTitleExportConfigurations")
+            return tr("settingsSectionTitleAbout")
         case 2:
+            return tr("settingsSectionTitleExportConfigurations")
+        case 3:
             return tr("settingsSectionTitleTunnelLog")
         default:
             return nil
@@ -167,7 +178,165 @@ extension SettingsTableViewController {
                 self?.presentLogView()
             }
             return cell
+        } else if field == .dohEnabled || field == .dohFallback {
+            let cell: SwitchCell = tableView.dequeueReusableCell(for: indexPath)
+            cell.message = field.localizedUIString
+            let config = DoHSettingsManager.shared.configuration
+            cell.isOn = field == .dohEnabled ? config.isEnabled : config.fallbackEnabled
+            cell.onSwitchToggled = { isOn in
+                var config = DoHSettingsManager.shared.configuration
+                if field == .dohEnabled {
+                    config.isEnabled = isOn
+                    DoHSettingsManager.shared.configuration = config
+                } else {
+                    config.fallbackEnabled = isOn
+                    DoHSettingsManager.shared.configuration = config
+                }
+            }
+            return cell
+        } else if field == .dohProvider {
+            let cell: ChevronCell = tableView.dequeueReusableCell(for: indexPath)
+            cell.message = field.localizedUIString
+            let config = DoHSettingsManager.shared.configuration
+            cell.detailMessage = config.provider.displayName
+            return cell
         }
         fatalError()
+    }
+
+    override func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        let field = settingsFieldsBySection[indexPath.section][indexPath.row]
+        if field == .dohProvider {
+            return indexPath
+        }
+        return nil
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        let field = settingsFieldsBySection[indexPath.section][indexPath.row]
+        tableView.deselectRow(at: indexPath, animated: true)
+        if field == .dohProvider {
+            showDoHProviderPicker(at: indexPath)
+        }
+    }
+
+    private func showDoHProviderPicker(at indexPath: IndexPath) {
+        let alertController = UIAlertController(title: tr("tunnelInterfaceDoHProvider"), message: nil, preferredStyle: .actionSheet)
+
+        for provider in DoHProvider.allCases {
+            let action = UIAlertAction(title: provider.displayName, style: .default) { [weak self] _ in
+                if provider == .custom {
+                    self?.showCustomDoHURLInput(at: indexPath)
+                } else {
+                    var config = DoHSettingsManager.shared.configuration
+                    config.provider = provider
+                    DoHSettingsManager.shared.configuration = config
+                    self?.tableView.reloadRows(at: [indexPath], with: .fade)
+                }
+            }
+            alertController.addAction(action)
+        }
+
+        let cancelAction = UIAlertAction(title: tr("actionCancel"), style: .cancel)
+        alertController.addAction(cancelAction)
+
+        if let popoverController = alertController.popoverPresentationController {
+            if let cell = tableView.cellForRow(at: indexPath) {
+                popoverController.sourceView = cell
+                popoverController.sourceRect = cell.bounds
+            }
+        }
+
+        present(alertController, animated: true)
+    }
+
+    private func showCustomDoHURLInput(at indexPath: IndexPath) {
+        let config = DoHSettingsManager.shared.configuration
+
+        let alertController = UIAlertController(
+            title: tr("tunnelInterfaceDoHCustom"),
+            message: tr("tunnelInterfaceDoHCustomMessage"),
+            preferredStyle: .alert
+        )
+
+        // DoH URL 输入框
+        alertController.addTextField { textField in
+            textField.placeholder = "https://doh.server/dns-query"
+            textField.keyboardType = .URL
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+            if let customURL = config.customURL {
+                textField.text = customURL.absoluteString
+            }
+        }
+
+        // Bootstrap IP 输入框
+        alertController.addTextField { textField in
+            textField.placeholder = tr("tunnelInterfaceDoHBootstrapIPsPlaceholder")
+            textField.keyboardType = .numbersAndPunctuation
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+            if !config.customBootstrapIPs.isEmpty {
+                textField.text = config.customBootstrapIPs.joined(separator: ", ")
+            }
+        }
+
+        let confirmAction = UIAlertAction(title: tr("actionSave"), style: .default) { [weak self, weak alertController] _ in
+            guard let textFields = alertController?.textFields,
+                  textFields.count >= 2 else { return }
+
+            let urlString = textFields[0].text ?? ""
+            let bootstrapIPsString = textFields[1].text ?? ""
+
+            // 校验 URL
+            guard !urlString.isEmpty, let url = URL(string: urlString) else {
+                self?.showInvalidURLAlert()
+                return
+            }
+
+            // 校验 Bootstrap IP
+            let bootstrapIPs = bootstrapIPsString.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+
+            guard !bootstrapIPs.isEmpty else {
+                self?.showMissingBootstrapIPAlert()
+                return
+            }
+
+            var newConfig = DoHSettingsManager.shared.configuration
+            newConfig.provider = .custom
+            newConfig.customURL = url
+            newConfig.customBootstrapIPs = bootstrapIPs
+            DoHSettingsManager.shared.configuration = newConfig
+            self?.tableView.reloadRows(at: [indexPath], with: .fade)
+        }
+
+        let cancelAction = UIAlertAction(title: tr("actionCancel"), style: .cancel)
+
+        alertController.addAction(confirmAction)
+        alertController.addAction(cancelAction)
+
+        present(alertController, animated: true)
+    }
+
+    private func showMissingBootstrapIPAlert() {
+        let alert = UIAlertController(
+            title: tr("alertMissingBootstrapIPTitle"),
+            message: tr("alertMissingBootstrapIPMessage"),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: tr("actionOK"), style: .default))
+        present(alert, animated: true)
+    }
+
+    private func showInvalidURLAlert() {
+        let alert = UIAlertController(
+            title: tr("alertInvalidURLTitle"),
+            message: tr("alertInvalidURLMessage"),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: tr("actionOK"), style: .default))
+        present(alert, animated: true)
     }
 }

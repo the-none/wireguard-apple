@@ -74,6 +74,20 @@
 "tunnelInterfaceMTU" = "MTU";
 "tunnelInterfaceDNS" = "DNS 服务器";
 "tunnelInterfaceStatus" = "状态";
+"tunnelInterfaceDoHEnabled" = "DNS over HTTPS";
+"tunnelInterfaceDoHProvider" = "DoH 服务商";
+"tunnelInterfaceDoHCustom" = "自定义 DoH";
+"tunnelInterfaceDoHCustomMessage" = "请输入 DoH 服务器地址和引导 IP";
+"tunnelInterfaceDoHBootstrapIPs" = "引导 IP";
+"tunnelInterfaceDoHBootstrapIPsPlaceholder" = "引导 IP（例如：8.8.8.8, 8.8.4.4）";
+"tunnelInterfaceDoHFallback" = "失败时降级到系统 DNS";
+
+"alertInvalidURLTitle" = "URL 无效";
+"alertInvalidURLMessage" = "请输入有效的 URL（例如：https://doh.server/dns-query）";
+"alertMissingBootstrapIPTitle" = "缺少引导 IP";
+"alertMissingBootstrapIPMessage" = "自定义 DoH 服务器需要至少一个引导 IP 地址";
+
+"tunnelSectionTitleDoH" = "DNS over HTTPS";
 
 "tunnelSectionTitlePeer" = "节点";
 

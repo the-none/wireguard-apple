@@ -83,6 +83,20 @@
 "tunnelInterfaceMTU" = "MTU";
 "tunnelInterfaceDNS" = "DNS servers";
 "tunnelInterfaceStatus" = "Status";
+"tunnelInterfaceDoHEnabled" = "DNS over HTTPS";
+"tunnelInterfaceDoHProvider" = "DoH Provider";
+"tunnelInterfaceDoHCustom" = "Custom DoH";
+"tunnelInterfaceDoHCustomMessage" = "Enter DoH server URL and bootstrap IP addresses";
+"tunnelInterfaceDoHBootstrapIPs" = "Bootstrap IPs";
+"tunnelInterfaceDoHBootstrapIPsPlaceholder" = "Bootstrap IPs (e.g., 8.8.8.8, 8.8.4.4)";
+"tunnelInterfaceDoHFallback" = "Fallback to System DNS";
+
+"alertInvalidURLTitle" = "Invalid URL";
+"alertInvalidURLMessage" = "Please enter a valid URL (e.g., https://doh.server/dns-query)";
+"alertMissingBootstrapIPTitle" = "Missing Bootstrap IP";
+"alertMissingBootstrapIPMessage" = "Please enter at least one bootstrap IP address for custom DoH server";
+
+"tunnelSectionTitleDoH" = "DNS over HTTPS";
 
 "tunnelSectionTitlePeer" = "Peer";
 

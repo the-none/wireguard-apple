@@ -128,12 +128,73 @@ class StatusMenu: NSMenu {
     }
 
     func addApplicationItems() {
+        addItem(createDoHMenuItem())
+        addItem(NSMenuItem.separator())
         let aboutItem = NSMenuItem(title: tr("macMenuAbout"), action: #selector(AppDelegate.aboutClicked), keyEquivalent: "")
         aboutItem.target = NSApp.delegate
         addItem(aboutItem)
         let quitItem = NSMenuItem(title: tr("macMenuQuit"), action: #selector(AppDelegate.quit), keyEquivalent: "")
         quitItem.target = NSApp.delegate
         addItem(quitItem)
+    }
+
+    private func createDoHMenuItem() -> NSMenuItem {
+        let dohMenuItem = NSMenuItem(title: tr("tunnelSectionTitleDoH"), action: nil, keyEquivalent: "")
+        let dohMenu = NSMenu()
+
+        // DoH 启用开关
+        let enabledItem = NSMenuItem(title: tr("tunnelInterfaceDoHEnabled"), action: #selector(dohEnabledToggled), keyEquivalent: "")
+        enabledItem.target = self
+        enabledItem.state = DoHSettingsManager.shared.isEnabled ? .on : .off
+        dohMenu.addItem(enabledItem)
+
+        dohMenu.addItem(NSMenuItem.separator())
+
+        // DoH 服务商选项
+        for provider in DoHProvider.allCases {
+            let providerItem = NSMenuItem(title: provider.displayName, action: #selector(dohProviderSelected(_:)), keyEquivalent: "")
+            providerItem.target = self
+            providerItem.representedObject = provider
+            providerItem.state = DoHSettingsManager.shared.provider == provider ? .on : .off
+            dohMenu.addItem(providerItem)
+        }
+
+        dohMenu.addItem(NSMenuItem.separator())
+
+        // DoH 降级开关
+        let fallbackItem = NSMenuItem(title: tr("tunnelInterfaceDoHFallback"), action: #selector(dohFallbackToggled), keyEquivalent: "")
+        fallbackItem.target = self
+        fallbackItem.state = DoHSettingsManager.shared.configuration.fallbackEnabled ? .on : .off
+        dohMenu.addItem(fallbackItem)
+
+        dohMenuItem.submenu = dohMenu
+        return dohMenuItem
+    }
+
+    @objc func dohEnabledToggled(_ sender: NSMenuItem) {
+        DoHSettingsManager.shared.isEnabled = !DoHSettingsManager.shared.isEnabled
+        sender.state = DoHSettingsManager.shared.isEnabled ? .on : .off
+    }
+
+    @objc func dohProviderSelected(_ sender: NSMenuItem) {
+        guard let provider = sender.representedObject as? DoHProvider else { return }
+        DoHSettingsManager.shared.provider = provider
+
+        // 更新所有 provider 菜单项的状态
+        if let dohMenu = sender.menu {
+            for item in dohMenu.items {
+                if let itemProvider = item.representedObject as? DoHProvider {
+                    item.state = itemProvider == provider ? .on : .off
+                }
+            }
+        }
+    }
+
+    @objc func dohFallbackToggled(_ sender: NSMenuItem) {
+        var config = DoHSettingsManager.shared.configuration
+        config.fallbackEnabled = !config.fallbackEnabled
+        DoHSettingsManager.shared.configuration = config
+        sender.state = config.fallbackEnabled ? .on : .off
     }
 
     @objc func deactivateClicked() {

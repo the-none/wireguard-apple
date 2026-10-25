@@ -31,10 +31,13 @@ extension Endpoint {
     public var stringRepresentation: String {
         switch host {
         case .name(let hostname, _):
-            return "\(hostname):\(port)"
+            return port.rawValue == 0 ? hostname : "\(hostname):\(port)"
         case .ipv4(let address):
             return "\(address):\(port)"
         case .ipv6(let address):
+            if port.rawValue == 0, ip4pEndpoint != nil {
+                return "[\(address)]"
+            }
             return "[\(address)]:\(port)"
         @unknown default:
             fatalError()
@@ -45,60 +48,68 @@ extension Endpoint {
         // Separation of host and port is based on 'parse_endpoint' function in
         // https://git.zx2c4.com/wireguard-tools/tree/src/config.c
         guard !string.isEmpty else { return nil }
-        let startOfPort: String.Index
         let hostString: String
+        let portString: String?
         if string.first! == "[" {
             // Look for IPv6-style endpoint, like [::1]:80
             let startOfHost = string.index(after: string.startIndex)
             guard let endOfHost = string.dropFirst().firstIndex(of: "]") else { return nil }
             let afterEndOfHost = string.index(after: endOfHost)
-            if afterEndOfHost == string.endIndex { return nil }
-            guard string[afterEndOfHost] == ":" else { return nil }
-            startOfPort = string.index(after: afterEndOfHost)
             hostString = String(string[startOfHost ..< endOfHost])
+            if afterEndOfHost == string.endIndex {
+                portString = nil
+            } else {
+                guard string[afterEndOfHost] == ":" else { return nil }
+                portString = String(string[string.index(after: afterEndOfHost)...])
+            }
+        } else if IPv6Address(string) != nil {
+            hostString = string
+            portString = nil
+        } else if let endOfHost = string.firstIndex(of: ":") {
+            hostString = String(string[..<endOfHost])
+            portString = String(string[string.index(after: endOfHost)...])
         } else {
-            // Look for an IPv4-style endpoint, like 127.0.0.1:80
-            guard let endOfHost = string.firstIndex(of: ":") else { return nil }
-            startOfPort = string.index(after: endOfHost)
-            hostString = String(string[string.startIndex ..< endOfHost])
+            hostString = string
+            portString = nil
         }
-        guard let endpointPort = NWEndpoint.Port(String(string[startOfPort ..< string.endIndex])) else { return nil }
+        guard !hostString.isEmpty, let endpointPort = NWEndpoint.Port(portString ?? "0") else { return nil }
         let invalidCharacterIndex = hostString.unicodeScalars.firstIndex { char in
             return !CharacterSet.urlHostAllowed.contains(char)
         }
         guard invalidCharacterIndex == nil else { return nil }
         host = NWEndpoint.Host(hostString)
         port = endpointPort
+        // A hostname can supply its port through an IP4P DNS answer.
+        if portString == nil, hasHostAsIPAddress(), ip4pEndpoint == nil {
+            return nil
+        }
     }
 
     public var shouldConvertIP4P: Bool {
-        // Endpoint with port 0 means use IP4P
-        return self.port.rawValue == 0
+        return ip4pEndpoint != nil
     }
 
     public func convertIP4P(ipv6Address: IPv6Address) -> (String, String) {
-
         let originIPv6 = ("[\(ipv6Address)]", "\(port)")
-
-        let addressParts = "\(ipv6Address)".split(separator: ":")
-        guard addressParts.count >= 4, addressParts[0] == "2001",
-              let port = UInt16(addressParts[1], radix: 16),
-              let ipv4Hi16 = UInt16(addressParts[2], radix: 16),
-              let ipv4Lo16 = UInt16(addressParts[3], radix: 16) else {
-              return originIPv6  // Invalid format or unable to parse components
-        }
-
-        // Convert segments to IPv4 string
-        let ipv4Part1 = ipv4Hi16 >> 8
-        let ipv4Part2 = ipv4Hi16 & 0xFF
-        let ipv4Part3 = ipv4Lo16 >> 8
-        let ipv4Part4 = ipv4Lo16 & 0xFF
-        let ipv4String = "\(ipv4Part1).\(ipv4Part2).\(ipv4Part3).\(ipv4Part4)"
-
-        guard IPv4Address(ipv4String) != nil else {
+        let bytes = ipv6Address.rawValue
+        // IP4P is 2001::/80 followed by a 16-bit port and a 32-bit IPv4 address.
+        guard bytes[0] == 0x20, bytes[1] == 0x01,
+              bytes[2..<10].allSatisfy({ $0 == 0 }) else {
             return originIPv6
         }
+
+        let port = UInt16(bytes[10]) << 8 | UInt16(bytes[11])
+        guard port != 0 else { return originIPv6 }
+        let ipv4String = "\(bytes[12]).\(bytes[13]).\(bytes[14]).\(bytes[15])"
         return (ipv4String, "\(port)")
+    }
+
+    var ip4pEndpoint: Endpoint? {
+        guard case .ipv6(let address) = host else { return nil }
+        let (addressString, portString) = convertIP4P(ipv6Address: address)
+        guard let ipv4 = IPv4Address(addressString),
+              let port = NWEndpoint.Port(portString) else { return nil }
+        return Endpoint(host: .ipv4(ipv4), port: port)
     }
 }
 

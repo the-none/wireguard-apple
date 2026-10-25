@@ -31,11 +31,10 @@ class PacketTunnelSettingsGenerator {
         for (peer, resolvedEndpoint) in zip(self.tunnelConfiguration.peers, self.resolvedEndpoints) {
             wgSettings.append("public_key=\(peer.publicKey.hexKey)\n")
 
-            let result = resolvedEndpoint.map(Self.reresolveEndpoint)
+            let result = resolvedEndpoint.map(reresolveEndpoint)
             if case .success((_, let resolvedEndpoint)) = result {
                 if case .name = resolvedEndpoint.host { assert(false, "Endpoint is not resolved") }
-                let actualEndpoint = parseIP4PEndpoint(resolvedEndpoint: resolvedEndpoint)
-                wgSettings.append("endpoint=\(actualEndpoint.stringRepresentation)\n")
+                wgSettings.append("endpoint=\(resolvedEndpoint.stringRepresentation)\n")
             }
             resolutionResults.append(result)
         }
@@ -60,11 +59,10 @@ class PacketTunnelSettingsGenerator {
                 wgSettings.append("preshared_key=\(preSharedKey)\n")
             }
 
-            let result = resolvedEndpoint.map(Self.reresolveEndpoint)
+            let result = resolvedEndpoint.map(reresolveEndpoint)
             if case .success((_, let resolvedEndpoint)) = result {
                 if case .name = resolvedEndpoint.host { assert(false, "Endpoint is not resolved") }
-                let actualEndpoint = parseIP4PEndpoint(resolvedEndpoint: resolvedEndpoint)
-                wgSettings.append("endpoint=\(actualEndpoint.stringRepresentation)\n")
+                wgSettings.append("endpoint=\(resolvedEndpoint.stringRepresentation)\n")
             }
             resolutionResults.append(result)
 
@@ -131,22 +129,6 @@ class PacketTunnelSettingsGenerator {
         return networkSettings
     }
 
-    private func parseIP4PEndpoint(resolvedEndpoint: Endpoint) -> Endpoint {
-        if resolvedEndpoint.shouldConvertIP4P, case .ipv6(let ipv6Address) = resolvedEndpoint.host {
-            let (ip4pAddress, ip4pPort) = resolvedEndpoint.convertIP4P(ipv6Address: ipv6Address)
-            let ip4pEndpoint = Endpoint(host: .ipv4(IPv4Address(ip4pAddress)!), port: NWEndpoint.Port(ip4pPort)!)
-            if case .ipv4 = ip4pEndpoint.host {
-                logHandler?(.verbose, "IP4P: converted [\(ipv6Address)]:0 to \(ip4pAddress):\(ip4pPort)")
-                return ip4pEndpoint
-            } else {
-                logHandler?(.error, "IP4P: failed to convert [\(ipv6Address)]:0")
-                return resolvedEndpoint
-            }
-        } else {
-            return resolvedEndpoint
-        }
-    }
-
     private func addresses() -> ([NEIPv4Route], [NEIPv6Route]) {
         var ipv4Routes = [NEIPv4Route]()
         var ipv6Routes = [NEIPv6Route]()
@@ -193,8 +175,15 @@ class PacketTunnelSettingsGenerator {
         return (ipv4IncludedRoutes, ipv6IncludedRoutes)
     }
 
-    private class func reresolveEndpoint(endpoint: Endpoint) -> EndpointResolutionResult {
-        return Result { (endpoint, try endpoint.withReresolvedIP()) }
+    private func reresolveEndpoint(endpoint: Endpoint) -> EndpointResolutionResult {
+        let actualEndpoint: Endpoint
+        if let ip4pEndpoint = endpoint.ip4pEndpoint {
+            logHandler?(.verbose, "IP4P: converted \(endpoint.stringRepresentation) to \(ip4pEndpoint.stringRepresentation)")
+            actualEndpoint = ip4pEndpoint
+        } else {
+            actualEndpoint = endpoint
+        }
+        return Result { (actualEndpoint, try actualEndpoint.withReresolvedIP()) }
             .mapError { error -> DNSResolutionError in
                 // swiftlint:disable:next force_cast
                 return error as! DNSResolutionError

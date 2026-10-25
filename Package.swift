@@ -35,6 +35,10 @@ let package = Package(
             ],
             publicHeadersPath: ".",
             linkerSettings: [.linkedLibrary("wg-go")]
+        ),
+        .testTarget(
+            name: "WireGuardKitTests",
+            dependencies: ["WireGuardKit"]
         )
     ]
 )

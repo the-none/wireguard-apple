@@ -55,11 +55,8 @@ extension DNSResolver {
             do {
                 let (ipv4, ipv6) = try resolver.resolveSync(hostname: hostname)
 
-                // 优先使用 IPv4
-                if let ipv4Address = ipv4 {
-                    return .success(Endpoint(host: .ipv4(ipv4Address), port: endpoint.port))
-                } else if let ipv6Address = ipv6 {
-                    return .success(Endpoint(host: .ipv6(ipv6Address), port: endpoint.port))
+                if let resolved = preferredEndpoint(ipv4: ipv4, ipv6: ipv6, port: endpoint.port) {
+                    return .success(resolved)
                 } else {
                     // DoH 解析失败，检查是否启用降级
                     if config.fallbackEnabled {
@@ -144,23 +141,35 @@ extension DNSResolver {
 
         for addrInfo in iterator {
             if let maybeIpv4Address = IPv4Address(addrInfo: addrInfo) {
-                ipv4Address = maybeIpv4Address
-                break // If we found an IPv4 address, we can stop
+                if ipv4Address == nil {
+                    ipv4Address = maybeIpv4Address
+                }
             } else if let maybeIpv6Address = IPv6Address(addrInfo: addrInfo) {
+                let candidate = Endpoint(host: .ipv6(maybeIpv6Address), port: endpoint.port)
+                if candidate.ip4pEndpoint != nil {
+                    return candidate
+                }
                 ipv6Address = maybeIpv6Address
-                continue // If we already have an IPv6 address, we can skip this one
             }
         }
 
-        // We prefer an IPv4 address over an IPv6 address
-        if let ipv4Address = ipv4Address {
-            return Endpoint(host: .ipv4(ipv4Address), port: endpoint.port)
-        } else if let ipv6Address = ipv6Address {
-            return Endpoint(host: .ipv6(ipv6Address), port: endpoint.port)
-        } else {
-            // Must never happen
-            fatalError()
+        guard let resolved = preferredEndpoint(ipv4: ipv4Address, ipv6: ipv6Address, port: endpoint.port) else {
+            throw DNSResolutionError(errorCode: endpoint.port.rawValue == 0 ? EAI_SERVICE : EAI_NONAME, address: name)
         }
+        return resolved
+    }
+
+    static func preferredEndpoint(ipv4: IPv4Address?, ipv6: IPv6Address?, port: NWEndpoint.Port) -> Endpoint? {
+        let ipv6Endpoint = ipv6.map { Endpoint(host: .ipv6($0), port: port) }
+        if let endpoint = ipv6Endpoint, endpoint.ip4pEndpoint != nil {
+            return endpoint
+        }
+        guard port.rawValue != 0 else { return nil }
+        // Preserve the usual IPv4 preference for non-IP4P endpoints.
+        if let ipv4 = ipv4 {
+            return Endpoint(host: .ipv4(ipv4), port: port)
+        }
+        return ipv6Endpoint
     }
 }
 

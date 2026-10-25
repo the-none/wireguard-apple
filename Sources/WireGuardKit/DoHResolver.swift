@@ -114,7 +114,8 @@ public final class DoHResolver {
         let ipv6Addresses = (try? await ipv6Task) ?? []
 
         let ipv4: IPv4Address? = ipv4Addresses.compactMap { IPv4Address($0) }.first
-        let ipv6: IPv6Address? = ipv6Addresses.compactMap { IPv6Address($0) }.first
+        let ipv6Candidates = ipv6Addresses.compactMap { IPv6Address($0) }
+        let ipv6 = Self.preferredIPv6Address(ipv6Candidates)
 
         log("DoH: resolved \(hostname) -> IPv4=\(ipv4.map { "\($0)" } ?? "nil"), IPv6=\(ipv6.map { "\($0)" } ?? "nil")")
 
@@ -124,6 +125,15 @@ public final class DoHResolver {
         }
 
         return (ipv4, ipv6)
+    }
+
+    static func preferredIPv6Address(_ addresses: [IPv6Address]) -> IPv6Address? {
+        if let address = addresses.first(where: {
+            Endpoint(host: .ipv6($0), port: 0).ip4pEndpoint != nil
+        }) {
+            return address
+        }
+        return addresses.first
     }
 
     /// 同步解析域名

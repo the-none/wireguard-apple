@@ -62,6 +62,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 errorNotifier.notify(PacketTunnelProviderError.couldNotStartBackend)
                 completionHandler(PacketTunnelProviderError.couldNotStartBackend)
 
+            case .setWireGuardConfig(let errorCode):
+                wg_log(.error, message: "WireGuard configuration update failed with code \(errorCode)")
+                completionHandler(adapterError)
+
             case .invalidState:
                 // Must never happen
                 fatalError()

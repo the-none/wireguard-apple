@@ -24,6 +24,9 @@ public enum WireGuardAdapterError: Error {
 
     /// Failure to start WireGuard backend.
     case startWireGuardBackend(Int32)
+
+    /// Failure to update WireGuard backend configuration.
+    case setWireGuardConfig(Int64)
 }
 
 /// Enum representing internal state of the `WireGuardAdapter`
@@ -267,7 +270,11 @@ public class WireGuardAdapter {
                     let (wgConfig, resolutionResults) = settingsGenerator.uapiConfiguration()
                     self.logEndpointResolutionResults(resolutionResults)
 
-                    wgSetConfig(handle, wgConfig)
+                    let result = wgSetConfig(handle, wgConfig)
+                    guard result == 0 else {
+                        self.logHandler(.error, "Failed to update WireGuard configuration: \(result)")
+                        throw WireGuardAdapterError.setWireGuardConfig(result)
+                    }
                     #if os(iOS)
                     wgDisableSomeRoamingForBrokenMobileSemantics(handle)
                     #endif
@@ -409,12 +416,7 @@ public class WireGuardAdapter {
             switch result {
             case .success((let sourceEndpoint, let resolvedEndpoint)):
                 if sourceEndpoint.host == resolvedEndpoint.host {
-                    if resolvedEndpoint.shouldConvertIP4P, case .ipv6(let ipv6Address) = resolvedEndpoint.host {
-                        let (ip4pAddress, ip4pPort) = resolvedEndpoint.convertIP4P(ipv6Address: ipv6Address)
-                        self.logHandler(.verbose, "IP4P: mapped \(sourceEndpoint.host) to \(ip4pAddress):\(ip4pPort).")
-                    } else {
-                        self.logHandler(.verbose, "DNS64: mapped \(sourceEndpoint.host) to itself.")
-                    }
+                    self.logHandler(.verbose, "DNS64: mapped \(sourceEndpoint.host) to itself.")
                 } else {
                     self.logHandler(.verbose, "DNS64: mapped \(sourceEndpoint.host) to \(resolvedEndpoint.host)")
                 }
@@ -440,7 +442,10 @@ public class WireGuardAdapter {
                 let (wgConfig, resolutionResults) = settingsGenerator.endpointUapiConfiguration()
                 self.logEndpointResolutionResults(resolutionResults)
 
-                wgSetConfig(handle, wgConfig)
+                let result = wgSetConfig(handle, wgConfig)
+                if result != 0 {
+                    self.logHandler(.error, "Failed to update WireGuard endpoints: \(result)")
+                }
                 wgDisableSomeRoamingForBrokenMobileSemantics(handle)
                 wgBumpSockets(handle)
             } else {

@@ -2,6 +2,23 @@
 
 This project contains an application for iOS and for macOS, as well as many components shared between the two of them. You may toggle between the two platforms by selecting the target from within Xcode.
 
+## IP4P endpoints
+
+IP4P encodes an IPv4 address and UDP port in `2001::/80`. An endpoint can use a
+hostname whose AAAA record contains IP4P, or an IP4P address directly, without a
+port suffix:
+
+```ini
+Endpoint = vpn.example.com
+# Or: Endpoint = [2001::ca6c:cb00:7109]
+```
+
+The address in this example decodes to `203.0.113.9:51820`. Both system DNS and
+DoH prefer valid IP4P records over ordinary A/AAAA records, and the encoded port
+takes precedence over any explicit endpoint port. Existing `:0` configurations
+remain supported. Without an IP4P record, a hostname needs an explicit port and
+uses the usual IPv4-first address selection.
+
 ## Building
 
 - Clone this repo:

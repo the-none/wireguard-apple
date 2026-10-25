@@ -19,6 +19,39 @@ takes precedence over any explicit endpoint port. Existing `:0` configurations
 remain supported. Without an IP4P record, a hostname needs an explicit port and
 uses the usual IPv4-first address selection.
 
+## Endpoint recovery
+
+While the tunnel is running, hostname endpoints are normally checked every
+60 seconds using the backend's handshake time and transfer counters, with
+5 seconds of timer leeway. Unanswered outgoing traffic (or an enabled persistent
+keepalive) starts a 30-second observation window. A successful handshake also has
+a 180-second grace period for normal rekeying. An old handshake by itself does
+not trigger recovery for an idle peer. Once the handshake grace period has
+expired (or no handshake has succeeded), suspected unanswered traffic switches
+local checks to every 15 seconds while the observation window runs, so failure
+confirmation does not wait for another full normal polling interval.
+
+If both windows have expired without incoming traffic or a new handshake, the
+original hostname is resolved again using the configured DoH/system DNS path.
+Checks and DNS retries then run every 15 seconds (3 seconds of timer leeway).
+After 3 minutes of continuous DNS recovery attempts, retries slow to once every
+60 seconds per peer; local checks also slow down unless another peer needs an
+earlier check. Incoming traffic or a new handshake restores normal polling and
+resets the fast-recovery window for any future failure.
+
+IP4P retains priority. A change to either the IP address or port updates only
+that peer's runtime endpoint, without restarting the tunnel or changing the saved
+configuration. Literal IP endpoints cannot be rediscovered through DNS.
+The timer is cancelled when there are no hostname endpoints, the tunnel stops,
+or the network becomes unavailable. Network changes and configuration updates
+trigger an immediate local check and restart polling only when needed.
+
+Queries run outside the adapter's control queue. Failed queries leave the current
+endpoint intact; results are discarded if the tunnel configuration or network
+path changed, or the peer recovered while resolution was in progress.
+This detects suspected loss of connectivity from statistics, rather than receiving
+individual handshake-failure events from the Go backend.
+
 ## Building
 
 - Clone this repo:

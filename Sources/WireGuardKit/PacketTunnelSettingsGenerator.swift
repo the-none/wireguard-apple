@@ -14,7 +14,7 @@ typealias EndpointResolutionResult = Result<(Endpoint, Endpoint), DNSResolutionE
 
 class PacketTunnelSettingsGenerator {
     let tunnelConfiguration: TunnelConfiguration
-    let resolvedEndpoints: [Endpoint?]
+    var resolvedEndpoints: [Endpoint?]
     let logHandler: ((WireGuardLogLevel, String) -> Void)?
 
     init(tunnelConfiguration: TunnelConfiguration, resolvedEndpoints: [Endpoint?], logHandler: ((WireGuardLogLevel, String) -> Void)? = nil) {
@@ -175,7 +175,7 @@ class PacketTunnelSettingsGenerator {
         return (ipv4IncludedRoutes, ipv6IncludedRoutes)
     }
 
-    private func reresolveEndpoint(endpoint: Endpoint) -> EndpointResolutionResult {
+    func reresolveEndpoint(endpoint: Endpoint) -> EndpointResolutionResult {
         let actualEndpoint: Endpoint
         if let ip4pEndpoint = endpoint.ip4pEndpoint {
             logHandler?(.verbose, "IP4P: converted \(endpoint.stringRepresentation) to \(ip4pEndpoint.stringRepresentation)")

@@ -59,6 +59,13 @@ public class WireGuardAdapter {
     /// Private queue used to synchronize access to `WireGuardAdapter` members.
     private let workQueue = DispatchQueue(label: "WireGuardAdapterWorkQueue")
 
+    private let endpointResolutionQueue = DispatchQueue(label: "WireGuardEndpointResolutionQueue", qos: .utility)
+    private var endpointMonitor: DispatchSourceTimer?
+    private var endpointMonitorInterval: TimeInterval?
+    private var endpointRecovery = [String: EndpointRecovery]()
+    private var endpointRecoveryGeneration: UInt = 0
+    private var isResolvingEndpoints = false
+
     /// Adapter state.
     private var state: State = .stopped
 
@@ -151,6 +158,7 @@ public class WireGuardAdapter {
 
         // Cancel network monitor
         networkMonitor?.cancel()
+        endpointMonitor?.cancel()
 
         // Shutdown the tunnel
         if case .started(let handle, _) = self.state {
@@ -207,6 +215,7 @@ public class WireGuardAdapter {
                     settingsGenerator
                 )
                 self.networkMonitor = networkMonitor
+                self.restartEndpointMonitor()
                 completionHandler(nil)
             } catch let error as WireGuardAdapterError {
                 networkMonitor.cancel()
@@ -235,6 +244,8 @@ public class WireGuardAdapter {
 
             self.networkMonitor?.cancel()
             self.networkMonitor = nil
+            self.cancelEndpointMonitor()
+            self.resetEndpointRecovery()
 
             self.state = .stopped
 
@@ -288,6 +299,7 @@ public class WireGuardAdapter {
                     fatalError()
                 }
 
+                self.restartEndpointMonitor()
                 completionHandler(nil)
             } catch let error as WireGuardAdapterError {
                 completionHandler(error)
@@ -298,6 +310,141 @@ public class WireGuardAdapter {
     }
 
     // MARK: - Private methods
+
+    private func restartEndpointMonitor() {
+        cancelEndpointMonitor()
+        resetEndpointRecovery()
+        checkEndpointHealth()
+    }
+
+    private func cancelEndpointMonitor() {
+        endpointMonitor?.cancel()
+        endpointMonitor = nil
+        endpointMonitorInterval = nil
+    }
+
+    private var shouldMonitorEndpoints: Bool {
+        guard case .started(_, let generator) = state else { return false }
+        return networkMonitor?.currentPath.status.isSatisfiable == true &&
+            generator.tunnelConfiguration.peers.contains(where: { $0.endpoint?.hasHostAsIPAddress() == false })
+    }
+
+    private func scheduleEndpointMonitor() {
+        guard shouldMonitorEndpoints else {
+            cancelEndpointMonitor()
+            return
+        }
+        let interval = endpointRecovery.values.map { $0.pollInterval }.min() ?? EndpointRecovery.normalPollInterval
+        guard interval != endpointMonitorInterval else { return }
+        let leeway: DispatchTimeInterval = .seconds(interval == EndpointRecovery.retryInterval ? 3 : 5)
+        if let timer = endpointMonitor {
+            timer.schedule(deadline: .now() + interval, repeating: interval, leeway: leeway)
+        } else {
+            let timer = DispatchSource.makeTimerSource(queue: workQueue)
+            timer.schedule(deadline: .now() + interval, repeating: interval, leeway: leeway)
+            timer.setEventHandler { [weak self] in
+                self?.checkEndpointHealth()
+            }
+            endpointMonitor = timer
+            timer.resume()
+        }
+        endpointMonitorInterval = interval
+    }
+
+    private func resetEndpointRecovery() {
+        endpointRecoveryGeneration &+= 1
+        endpointRecovery.removeAll()
+        isResolvingEndpoints = false
+    }
+
+    private func runtimePeers(handle: Int32) -> [String: PeerRuntimeState] {
+        guard let settings = wgGetConfig(handle) else { return [:] }
+        defer { free(settings) }
+        return PeerRuntimeState.parse(String(cString: settings))
+    }
+
+    private func checkEndpointHealth() {
+        guard case .started(let handle, let generator) = state, shouldMonitorEndpoints else {
+            cancelEndpointMonitor()
+            return
+        }
+        guard !isResolvingEndpoints else { return }
+        defer { scheduleEndpointMonitor() }
+
+        let runtime = runtimePeers(handle: handle)
+        let time = ProcessInfo.processInfo.systemUptime
+        let wallTime = Date().timeIntervalSince1970
+        var indices = [Int]()
+        for (index, peer) in generator.tunnelConfiguration.peers.enumerated() {
+            guard let endpoint = peer.endpoint, case .name = endpoint.host,
+                  let status = runtime[peer.publicKey.hexKey] else { continue }
+            let key = peer.publicKey.hexKey
+            var recovery = endpointRecovery[key] ?? EndpointRecovery()
+            if recovery.shouldResolve(status, at: time, wallTime: wallTime, persistentKeepAlive: peer.persistentKeepAlive ?? 0) {
+                indices.append(index)
+            }
+            endpointRecovery[key] = recovery
+        }
+        guard !indices.isEmpty else { return }
+
+        isResolvingEndpoints = true
+        let generation = endpointRecoveryGeneration
+        let endpoints = indices.map { generator.tunnelConfiguration.peers[$0].endpoint }
+        let dohConfiguration = self.dohConfiguration
+        let logHandler = self.logHandler
+        logHandler(.verbose, "Endpoint recovery: resolving \(indices.count) peer(s) after unanswered traffic")
+
+        endpointResolutionQueue.async { [weak self] in
+            let resolved = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) {
+                logHandler(.verbose, $0)
+            }
+            let results = resolved.map { result in
+                result?.flatMap { endpoint in
+                    generator.reresolveEndpoint(endpoint: endpoint).map { (_, actualEndpoint) in
+                        (endpoint, actualEndpoint)
+                    }
+                }
+            }
+            self?.workQueue.async { [weak self] in
+                guard let self = self, self.endpointRecoveryGeneration == generation else { return }
+                self.isResolvingEndpoints = false
+                guard case .started(let currentHandle, _) = self.state, currentHandle == handle else { return }
+
+                // A handshake, incoming packet or roaming endpoint may have
+                // recovered the peer while DNS was in flight.
+                let latest = self.runtimePeers(handle: handle)
+                for (index, result) in zip(indices, results) {
+                    let key = generator.tunnelConfiguration.peers[index].publicKey.hexKey
+                    guard let before = runtime[key], let current = latest[key] else { continue }
+                    if current.receivedTraffic(since: before) {
+                        self.endpointRecovery[key]?.didReceiveResponse(current)
+                        continue
+                    }
+                    guard current.endpoint == before.endpoint else { continue }
+                    switch result {
+                    case .success((let resolvedEndpoint, let actualEndpoint)):
+                        if let config = current.endpointUpdate(to: actualEndpoint) {
+                            let error = wgSetConfig(handle, config)
+                            guard error == 0 else {
+                                logHandler(.error, "Endpoint recovery: failed to update peer endpoint: \(error)")
+                                continue
+                            }
+                            #if os(iOS)
+                            wgDisableSomeRoamingForBrokenMobileSemantics(handle)
+                            #endif
+                            logHandler(.verbose, "Endpoint recovery: updated endpoint to \(actualEndpoint.stringRepresentation)")
+                        }
+                        generator.resolvedEndpoints[index] = resolvedEndpoint
+                    case .failure(let error):
+                        logHandler(.error, "Endpoint recovery: failed to resolve \(error.address): \(error.localizedDescription)")
+                    case nil:
+                        break
+                    }
+                }
+                self.scheduleEndpointMonitor()
+            }
+        }
+    }
 
     /// Setup WireGuard log handler.
     private func setupLogHandler() {
@@ -430,6 +577,7 @@ public class WireGuardAdapter {
     /// - Parameter path: new network path
     private func didReceivePathUpdate(path: Network.NWPath) {
         self.logHandler(.verbose, "Network change detected with \(path.status) route and interface order \(path.availableInterfaces)")
+        defer { restartEndpointMonitor() }
 
         #if os(macOS)
         if case .started(let handle, _) = self.state {

@@ -63,6 +63,18 @@ class MainViewController: UISplitViewController {
         guard let tunnelsManager = self.tunnelsManager else { return nil }
         return tunnelsManager.mapTunnels { $0.name }
     }
+
+    var restorableTunnelName: String? {
+        // A collapsed split view can nest navigation controllers.
+        var controllers = viewControllers
+        while let controller = controllers.popLast() {
+            if let detailVC = controller as? TunnelDetailTableViewController {
+                return detailVC.tunnel.name
+            }
+            controllers.append(contentsOf: controller.children)
+        }
+        return nil
+    }
 }
 
 extension MainViewController: TunnelsManagerActivationDelegate {
@@ -112,10 +124,11 @@ extension MainViewController {
         }
     }
 
-    func importFromDisposableFile(url: URL) {
+    func importFromDisposableFiles(urls: [URL]) {
+        guard !urls.isEmpty else { return }
         let importFromFileBlock: (TunnelsManager) -> Void = { [weak self] tunnelsManager in
-            TunnelImporter.importFromFile(urls: [url], into: tunnelsManager, sourceVC: self, errorPresenterType: ErrorPresenter.self) {
-                _ = FileManager.deleteFile(at: url)
+            TunnelImporter.importFromFile(urls: urls, into: tunnelsManager, sourceVC: self, errorPresenterType: ErrorPresenter.self) {
+                urls.forEach { _ = FileManager.deleteFile(at: $0) }
             }
         }
         if let tunnelsManager = tunnelsManager {

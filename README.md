@@ -68,11 +68,16 @@ $ cp Sources/WireGuardApp/Config/Developer.xcconfig.template Sources/WireGuardAp
 $ vim Sources/WireGuardApp/Config/Developer.xcconfig
 ```
 
-- Install swiftlint and go 1.19:
+- Install SwiftLint and Go:
 
 ```
 $ brew install swiftlint go
 ```
+
+If Go is installed through a version manager such as mise and Xcode cannot find
+it, run `command -v go` in Terminal and add `GO = /absolute/path/to/go` to
+`Sources/WireGuardApp/Config/Developer.xcconfig`. Xcode does not necessarily
+inherit the terminal's `PATH`. This local configuration file is ignored by Git.
 
 - Open project in Xcode:
 

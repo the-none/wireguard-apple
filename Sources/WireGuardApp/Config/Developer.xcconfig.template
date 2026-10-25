@@ -8,3 +8,6 @@ DEVELOPMENT_TEAM = <team_id>
 // with Network Extensions capabilty.
 APP_ID_IOS = <app_id>
 APP_ID_MACOS = <app_id>
+
+// Optional: absolute path to Go when Xcode cannot find it (for example, with mise).
+// GO = /absolute/path/to/go

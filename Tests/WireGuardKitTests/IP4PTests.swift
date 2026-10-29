@@ -93,7 +93,83 @@ final class IP4PTests: XCTestCase {
         XCTAssertEqual(DoHResolver.preferredIPv6Address([ordinary, invalid]), ordinary)
     }
 
+    func testAllIP4PCandidatesSurviveMixedDNSAnswersWithoutDuplicates() throws {
+        let ordinary = try XCTUnwrap(IPv6Address("2001:db8::1"))
+        let first = try XCTUnwrap(IPv6Address("2001::ca6c:c000:201"))
+        let second = try XCTUnwrap(IPv6Address("2001::ca6d:cb00:7109"))
+        let candidates = DNSResolver.preferredEndpoints(
+            ipv4: IPv4Address("192.0.2.99"), ipv6: [ordinary, first, first, second], port: 1234)
+        XCTAssertEqual(candidates.map { $0.ip4pEndpoint?.stringRepresentation },
+                       ["192.0.2.1:51820", "203.0.113.9:51821"])
+    }
+
+    func testCandidateSelectionPreservesOrdinaryDNSBehavior() throws {
+        let first = try XCTUnwrap(IPv6Address("2001:db8::1"))
+        let last = try XCTUnwrap(IPv6Address("2001:db8::2"))
+        XCTAssertEqual(DNSResolver.preferredEndpoints(ipv4: IPv4Address("192.0.2.1"), ipv6: [first, last], port: 1234)
+            .map { $0.stringRepresentation }, ["192.0.2.1:1234"])
+        XCTAssertEqual(DNSResolver.preferredEndpoints(ipv4: nil, ipv6: [first, last], port: 1234).first?.host, .ipv6(first))
+        XCTAssertEqual(DNSResolver.preferredEndpoints(ipv4: nil, ipv6: [first, last], port: 1234, ordinaryIPv6: last)
+            .first?.host, .ipv6(last))
+        XCTAssertTrue(DNSResolver.preferredEndpoints(ipv4: IPv4Address("192.0.2.1"), ipv6: [first], port: 0).isEmpty)
+    }
+
+    func testRecoveryTriesSecondIP4PRegardlessOfDNSAnswerOrder() throws {
+        let first = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        let second = try XCTUnwrap(Endpoint(from: "[2001::ca6d:cb00:7109]"))
+        for candidates in [[first, second], [second, first]] {
+            XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: candidates, current: first), second)
+            XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: candidates, current: second), first)
+        }
+    }
+
+    func testThreeIP4PCandidatesAreNotStarvedByAnswerReordering() throws {
+        let first = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        let second = try XCTUnwrap(Endpoint(from: "[2001::ca6d:c000:201]"))
+        let third = try XCTUnwrap(Endpoint(from: "[2001::ca6e:c000:201]"))
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [third, second, first], current: first), second)
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [second, first, third], current: second), third)
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [third, first, second], current: third), first)
+    }
+
+    func testRecoveryUsesFreshCandidatesWhenOldAddressDisappears() throws {
+        let old = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        let new = try XCTUnwrap(Endpoint(from: "[2001::ca6d:cb00:7109]"))
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [new], current: old), new)
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [new], current: new), new)
+        XCTAssertNil(DNSResolver.recoveryEndpoint(candidates: [], current: old))
+    }
+
+    func testRecoveryDoesNotChooseOrdinaryAddressWhenIP4PExists() throws {
+        let ordinary = try XCTUnwrap(Endpoint(from: "192.0.2.99:1234"))
+        let ip4p = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [ordinary, ip4p], current: ip4p), ip4p)
+        XCTAssertEqual(DNSResolver.recoveryEndpoint(candidates: [ordinary], current: ip4p), ordinary)
+    }
+
+    func testLiteralAndAbsentEndpointsKeepCandidateArrayAligned() throws {
+        let literal = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        let results = DNSResolver.resolveCandidatesWithDoH(endpoints: [nil, literal], dohConfig: .default)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertNil(results[0])
+        XCTAssertEqual(try results[1]?.get(), [literal])
+    }
+
     #if os(macOS)
+    func testPathReconfigurationKeepsSelectedCandidateAndRemainingChoices() throws {
+        let first = try XCTUnwrap(Endpoint(from: "[2001::ca6c:c000:201]"))
+        let second = try XCTUnwrap(Endpoint(from: "[2001::ca6d:cb00:7109]"))
+        let generator = makeGenerator(endpoint: first)
+        generator.endpointCandidates = [[first, second]]
+        generator.resolvedEndpoints[0] = second
+        for _ in 0..<10 {
+            let (config, _) = generator.endpointUapiConfiguration()
+            XCTAssertTrue(config.contains("endpoint=203.0.113.9:51821\n"))
+            XCTAssertEqual(generator.endpointCandidates[0], [first, second])
+            XCTAssertEqual(generator.resolvedEndpoints[0], second)
+        }
+    }
+
     func testBothUapiPathsUseDecodedEndpoint() throws {
         let endpoint = try XCTUnwrap(Endpoint(from: "[2001::ca6c:cb00:7109]:0"))
         let generator = makeGenerator(endpoint: endpoint)

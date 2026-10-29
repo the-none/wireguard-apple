@@ -15,11 +15,13 @@ typealias EndpointResolutionResult = Result<(Endpoint, Endpoint), DNSResolutionE
 class PacketTunnelSettingsGenerator {
     let tunnelConfiguration: TunnelConfiguration
     var resolvedEndpoints: [Endpoint?]
+    var endpointCandidates: [[Endpoint]]
     let logHandler: ((WireGuardLogLevel, String) -> Void)?
 
-    init(tunnelConfiguration: TunnelConfiguration, resolvedEndpoints: [Endpoint?], logHandler: ((WireGuardLogLevel, String) -> Void)? = nil) {
+    init(tunnelConfiguration: TunnelConfiguration, resolvedEndpoints: [Endpoint?], endpointCandidates: [[Endpoint]]? = nil, logHandler: ((WireGuardLogLevel, String) -> Void)? = nil) {
         self.tunnelConfiguration = tunnelConfiguration
         self.resolvedEndpoints = resolvedEndpoints
+        self.endpointCandidates = endpointCandidates ?? resolvedEndpoints.map { $0.map { [$0] } ?? [] }
         self.logHandler = logHandler
     }
 

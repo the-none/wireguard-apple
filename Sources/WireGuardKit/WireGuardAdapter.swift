@@ -206,6 +206,7 @@ public class WireGuardAdapter {
             do {
                 let settingsGenerator = try self.makeSettingsGenerator(with: tunnelConfiguration)
                 try self.setNetworkSettings(settingsGenerator.generateNetworkSettings())
+                self.logHandler(.verbose, "Tunnel network settings applied before handshake; allowedIPs=\(tunnelConfiguration.peers.flatMap { $0.allowedIPs }.map { $0.stringRepresentation }.joined(separator: ","))")
 
                 let (wgConfig, resolutionResults) = settingsGenerator.uapiConfiguration()
                 self.logEndpointResolutionResults(resolutionResults)
@@ -314,6 +315,7 @@ public class WireGuardAdapter {
     private func restartEndpointMonitor() {
         cancelEndpointMonitor()
         resetEndpointRecovery()
+        logHandler(.verbose, "Endpoint recovery: monitor reset; tunnel=\(interfaceName ?? "unknown"), network=\(String(describing: networkMonitor?.currentPath.status)), eligible=\(shouldMonitorEndpoints)")
         checkEndpointHealth()
     }
 
@@ -349,6 +351,7 @@ public class WireGuardAdapter {
             timer.resume()
         }
         endpointMonitorInterval = interval
+        logHandler(.verbose, "Endpoint recovery: next health checks every \(interval)s")
     }
 
     private func resetEndpointRecovery() {
@@ -365,10 +368,14 @@ public class WireGuardAdapter {
 
     private func checkEndpointHealth() {
         guard case .started(let handle, let generator) = state, shouldMonitorEndpoints else {
+            logHandler(.verbose, "Endpoint recovery: monitor inactive (requires started backend, satisfiable network and hostname endpoint)")
             cancelEndpointMonitor()
             return
         }
-        guard !isResolvingEndpoints else { return }
+        guard !isResolvingEndpoints else {
+            logHandler(.verbose, "Endpoint recovery: health check skipped; resolution still in progress")
+            return
+        }
         defer { scheduleEndpointMonitor() }
 
         let runtime = runtimePeers(handle: handle)
@@ -376,11 +383,17 @@ public class WireGuardAdapter {
         let wallTime = Date().timeIntervalSince1970
         var indices = [Int]()
         for (index, peer) in generator.tunnelConfiguration.peers.enumerated() {
-            guard let endpoint = peer.endpoint, case .name = endpoint.host,
-                  let status = runtime[peer.publicKey.hexKey] else { continue }
+            guard let endpoint = peer.endpoint, case .name = endpoint.host else { continue }
+            guard let status = runtime[peer.publicKey.hexKey] else {
+                logHandler(.verbose, "Endpoint recovery: peer[\(index)] runtime state missing")
+                continue
+            }
             let key = peer.publicKey.hexKey
             var recovery = endpointRecovery[key] ?? EndpointRecovery()
-            if recovery.shouldResolve(status, at: time, wallTime: wallTime, persistentKeepAlive: peer.persistentKeepAlive ?? 0) {
+            let shouldResolve = recovery.shouldResolve(status, at: time, wallTime: wallTime, persistentKeepAlive: peer.persistentKeepAlive ?? 0)
+            let handshakeAge = status.lastHandshake == 0 ? "never" : String(format: "%.0fs", wallTime - status.lastHandshake)
+            logHandler(.verbose, "Endpoint recovery: peer[\(index)] source=\(endpoint.stringRepresentation), current=\(status.endpoint?.stringRepresentation ?? "none"), rx=\(status.rxBytes), tx=\(status.txBytes), handshakeAge=\(handshakeAge), keepalive=\(peer.persistentKeepAlive ?? 0)s, resolve=\(shouldResolve), poll=\(recovery.pollInterval)s")
+            if shouldResolve {
                 indices.append(index)
             }
             endpointRecovery[key] = recovery
@@ -390,39 +403,72 @@ public class WireGuardAdapter {
         isResolvingEndpoints = true
         let generation = endpointRecoveryGeneration
         let endpoints = indices.map { generator.tunnelConfiguration.peers[$0].endpoint }
+        let currentEndpoints = indices.map { generator.resolvedEndpoints[$0] }
+        let cachedCandidates = indices.map { generator.endpointCandidates[$0] }
         let dohConfiguration = self.dohConfiguration
-        let logHandler = self.logHandler
+        let attemptID = UUID().uuidString.prefix(8)
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let logHandler: LogHandler = { [logHandler = self.logHandler] level, message in
+            logHandler(level, "Recovery[\(attemptID)]: \(message)")
+        }
         logHandler(.verbose, "Endpoint recovery: resolving \(indices.count) peer(s) after unanswered traffic")
 
         endpointResolutionQueue.async { [weak self] in
-            let resolved = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) {
+            let resolved = DNSResolver.resolveCandidatesWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) {
                 logHandler(.verbose, $0)
             }
-            let results = resolved.map { result in
-                result?.flatMap { endpoint in
-                    generator.reresolveEndpoint(endpoint: endpoint).map { (_, actualEndpoint) in
-                        (endpoint, actualEndpoint)
+            let results = resolved.enumerated().map { offset, result in
+                var candidateResult = result
+                if case .failure(let error) = result {
+                    let cached = cachedCandidates[offset].filter { $0.ip4pEndpoint != nil }
+                    if cached.count > 1 {
+                        logHandler(.verbose, "DNS failed (\(error.localizedDescription)); trying a cached IP4P candidate for peer[\(indices[offset])]")
+                        candidateResult = .success(cached)
+                    }
+                }
+                return candidateResult?.flatMap { candidates -> Result<(Endpoint, Endpoint, [Endpoint]), DNSResolutionError> in
+                    guard let endpoint = DNSResolver.recoveryEndpoint(candidates: candidates, current: currentEndpoints[offset]) else {
+                        return .failure(DNSResolutionError(errorCode: EAI_NONAME, address: endpoints[offset]?.stringRepresentation ?? ""))
+                    }
+                    return generator.reresolveEndpoint(endpoint: endpoint).map { (_, actualEndpoint) in
+                        (endpoint, actualEndpoint, candidates)
                     }
                 }
             }
             self?.workQueue.async { [weak self] in
-                guard let self = self, self.endpointRecoveryGeneration == generation else { return }
+                guard let self = self else { return }
+                guard self.endpointRecoveryGeneration == generation else {
+                    logHandler(.verbose, "Discarding results after monitor reset")
+                    return
+                }
                 self.isResolvingEndpoints = false
-                guard case .started(let currentHandle, _) = self.state, currentHandle == handle else { return }
+                guard case .started(let currentHandle, _) = self.state, currentHandle == handle else {
+                    logHandler(.verbose, "Discarding results after backend changed")
+                    return
+                }
+                logHandler(.verbose, "Resolution completed after \(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s")
 
                 // A handshake, incoming packet or roaming endpoint may have
                 // recovered the peer while DNS was in flight.
                 let latest = self.runtimePeers(handle: handle)
                 for (index, result) in zip(indices, results) {
                     let key = generator.tunnelConfiguration.peers[index].publicKey.hexKey
-                    guard let before = runtime[key], let current = latest[key] else { continue }
+                    guard let before = runtime[key], let current = latest[key] else {
+                        logHandler(.verbose, "peer[\(index)] result skipped: runtime state missing")
+                        continue
+                    }
                     if current.receivedTraffic(since: before) {
+                        logHandler(.verbose, "peer[\(index)] result skipped: traffic or handshake recovered")
                         self.endpointRecovery[key]?.didReceiveResponse(current)
                         continue
                     }
-                    guard current.endpoint == before.endpoint else { continue }
+                    guard current.endpoint == before.endpoint else {
+                        logHandler(.verbose, "peer[\(index)] result skipped: endpoint changed while resolving")
+                        continue
+                    }
                     switch result {
-                    case .success((let resolvedEndpoint, let actualEndpoint)):
+                    case .success((let resolvedEndpoint, let actualEndpoint, let candidates)):
+                        logHandler(.verbose, "peer[\(index)] DNS=\(resolvedEndpoint.stringRepresentation), target=\(actualEndpoint.stringRepresentation), previous=\(current.endpoint?.stringRepresentation ?? "none")")
                         if let config = current.endpointUpdate(to: actualEndpoint) {
                             let error = wgSetConfig(handle, config)
                             guard error == 0 else {
@@ -433,12 +479,16 @@ public class WireGuardAdapter {
                             wgDisableSomeRoamingForBrokenMobileSemantics(handle)
                             #endif
                             logHandler(.verbose, "Endpoint recovery: updated endpoint to \(actualEndpoint.stringRepresentation)")
+                            self.endpointRecovery[key]?.didUpdateEndpoint(at: ProcessInfo.processInfo.systemUptime)
+                        } else {
+                            logHandler(.verbose, "peer[\(index)] endpoint unchanged; DNS still resolves to the current target")
                         }
                         generator.resolvedEndpoints[index] = resolvedEndpoint
+                        generator.endpointCandidates[index] = candidates
                     case .failure(let error):
                         logHandler(.error, "Endpoint recovery: failed to resolve \(error.address): \(error.localizedDescription)")
                     case nil:
-                        break
+                        logHandler(.verbose, "peer[\(index)] has no resolution result")
                     }
                 }
                 self.scheduleEndpointMonitor()
@@ -500,9 +550,9 @@ public class WireGuardAdapter {
     /// - Parameter tunnelConfiguration: tunnel configuration.
     /// - Throws: an error of type `WireGuardAdapterError`.
     /// - Returns: The list of resolved endpoints.
-    private func resolvePeers(for tunnelConfiguration: TunnelConfiguration) throws -> [Endpoint?] {
+    private func resolvePeers(for tunnelConfiguration: TunnelConfiguration) throws -> [[Endpoint]] {
         let endpoints = tunnelConfiguration.peers.map { $0.endpoint }
-        let resolutionResults = DNSResolver.resolveSyncWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) { [weak self] message in
+        let resolutionResults = DNSResolver.resolveCandidatesWithDoH(endpoints: endpoints, dohConfig: dohConfiguration) { [weak self] message in
             self?.logHandler(.verbose, message)
         }
         let resolutionErrors = resolutionResults.compactMap { result -> DNSResolutionError? in
@@ -517,9 +567,9 @@ public class WireGuardAdapter {
             throw WireGuardAdapterError.dnsResolution(resolutionErrors)
         }
 
-        let resolvedEndpoints = resolutionResults.map { result -> Endpoint? in
+        let resolvedEndpoints = resolutionResults.map { result -> [Endpoint] in
             // swiftlint:disable:next force_try
-            return try! result?.get()
+            return try! result?.get() ?? []
         }
 
         return resolvedEndpoints
@@ -549,9 +599,11 @@ public class WireGuardAdapter {
     /// - Throws: an error of type `WireGuardAdapterError`.
     /// - Returns: an instance of type `PacketTunnelSettingsGenerator`.
     private func makeSettingsGenerator(with tunnelConfiguration: TunnelConfiguration) throws -> PacketTunnelSettingsGenerator {
+        let candidates = try self.resolvePeers(for: tunnelConfiguration)
         return PacketTunnelSettingsGenerator(
             tunnelConfiguration: tunnelConfiguration,
-            resolvedEndpoints: try self.resolvePeers(for: tunnelConfiguration),
+            resolvedEndpoints: candidates.map { $0.first },
+            endpointCandidates: candidates,
             logHandler: self.logHandler
         )
     }
@@ -577,7 +629,8 @@ public class WireGuardAdapter {
     /// - Parameter path: new network path
     private func didReceivePathUpdate(path: Network.NWPath) {
         self.logHandler(.verbose, "Network change detected with \(path.status) route and interface order \(path.availableInterfaces)")
-        defer { restartEndpointMonitor() }
+        // A path notification does not invalidate peer health or an in-flight DNS result.
+        defer { scheduleEndpointMonitor() }
 
         #if os(macOS)
         if case .started(let handle, _) = self.state {
@@ -600,6 +653,7 @@ public class WireGuardAdapter {
                 self.logHandler(.verbose, "Connectivity offline, pausing backend.")
 
                 self.state = .temporaryShutdown(settingsGenerator)
+                self.resetEndpointRecovery()
                 wgTurnOff(handle)
             }
 
@@ -618,6 +672,7 @@ public class WireGuardAdapter {
                     try self.startWireGuardBackend(wgConfig: wgConfig),
                     settingsGenerator
                 )
+                self.restartEndpointMonitor()
             } catch {
                 self.logHandler(.error, "Failed to restart backend: \(error.localizedDescription)")
             }

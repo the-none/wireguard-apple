@@ -71,6 +71,12 @@ struct EndpointRecovery {
     private var failureSince: TimeInterval?
     private var lastResolutionAttempt: TimeInterval?
 
+    mutating func didUpdateEndpoint(at time: TimeInterval) {
+        // Give each candidate a full response window before rotating again.
+        awaitingResponseSince = time
+        lastResolutionAttempt = time
+    }
+
     mutating func didReceiveResponse(_ current: PeerRuntimeState) {
         previous = current
         awaitingResponseSince = nil

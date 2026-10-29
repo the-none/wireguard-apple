@@ -22,10 +22,19 @@ extension DNSResolver {
         dohConfig: DoHConfiguration?,
         logHandler: ((String) -> Void)? = nil
     ) -> [Result<Endpoint, DNSResolutionError>?] {
+        return resolveCandidatesWithDoH(endpoints: endpoints, dohConfig: dohConfig, logHandler: logHandler)
+            .map { $0?.map { $0[0] } }
+    }
+
+    static func resolveCandidatesWithDoH(
+        endpoints: [Endpoint?],
+        dohConfig: DoHConfiguration?,
+        logHandler: ((String) -> Void)? = nil
+    ) -> [Result<[Endpoint], DNSResolutionError>?] {
         // 如果 DoH 未启用，使用传统解析
         guard let config = dohConfig, config.isEnabled else {
             logHandler?("DoH: disabled, using system DNS")
-            return resolveSync(endpoints: endpoints)
+            return resolveCandidates(endpoints: endpoints)
         }
 
         let isAllEndpointsAlreadyResolved = endpoints.allSatisfy { maybeEndpoint -> Bool in
@@ -35,32 +44,35 @@ extension DNSResolver {
         if isAllEndpointsAlreadyResolved {
             logHandler?("DoH: all endpoints already resolved")
             return endpoints.map { endpoint in
-                return endpoint.map { .success($0) }
+                return endpoint.map { .success([$0]) }
             }
         }
 
         let resolver = DoHResolver(configuration: config, logHandler: logHandler)
 
-        return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<Endpoint, DNSResolutionError>? in
+        return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<[Endpoint], DNSResolutionError>? in
             guard let endpoint = endpoint else { return nil }
 
             if endpoint.hasHostAsIPAddress() {
-                return .success(endpoint)
+                return .success([endpoint])
             }
 
             guard case .name(let hostname, _) = endpoint.host else {
-                return .success(endpoint)
+                return .success([endpoint])
             }
 
             do {
-                let (ipv4, ipv6) = try resolver.resolveSync(hostname: hostname)
+                let (ipv4, ipv6) = try resolver.resolveAddressesSync(hostname: hostname)
 
-                if let resolved = preferredEndpoint(ipv4: ipv4, ipv6: ipv6, port: endpoint.port) {
-                    return .success(resolved)
+                let candidates = preferredEndpoints(ipv4: ipv4.first, ipv6: ipv6, port: endpoint.port)
+                if !candidates.isEmpty {
+                    logHandler?("DNS: \(hostname) candidates=\(candidates.map { $0.stringRepresentation })")
+                    return .success(candidates)
                 } else {
                     // DoH 解析失败，检查是否启用降级
                     if config.fallbackEnabled {
-                        return Result { try DNSResolver.resolveSync(endpoint: endpoint) }
+                        logHandler?("DNS: \(hostname) has no usable DoH endpoint; falling back to system DNS")
+                        return Result { try DNSResolver.resolveCandidates(endpoint: endpoint) }
                             .mapError { error -> DNSResolutionError in
                                 // swiftlint:disable:next force_cast
                                 return error as! DNSResolutionError
@@ -69,9 +81,10 @@ extension DNSResolver {
                     return .failure(DNSResolutionError(errorCode: EAI_NONAME, address: hostname))
                 }
             } catch {
+                logHandler?("DNS: DoH failed for \(hostname): \(error); system fallback=\(config.fallbackEnabled)")
                 // DoH 解析失败，检查是否启用降级
                 if config.fallbackEnabled {
-                    return Result { try DNSResolver.resolveSync(endpoint: endpoint) }
+                    return Result { try DNSResolver.resolveCandidates(endpoint: endpoint) }
                         .mapError { error -> DNSResolutionError in
                             // swiftlint:disable:next force_cast
                             return error as! DNSResolutionError
@@ -83,23 +96,27 @@ extension DNSResolver {
     }
 
     static func resolveSync(endpoints: [Endpoint?]) -> [Result<Endpoint, DNSResolutionError>?] {
+        return resolveCandidates(endpoints: endpoints).map { $0?.map { $0[0] } }
+    }
+
+    private static func resolveCandidates(endpoints: [Endpoint?]) -> [Result<[Endpoint], DNSResolutionError>?] {
         let isAllEndpointsAlreadyResolved = endpoints.allSatisfy { maybeEndpoint -> Bool in
             return maybeEndpoint?.hasHostAsIPAddress() ?? true
         }
 
         if isAllEndpointsAlreadyResolved {
             return endpoints.map { endpoint in
-                return endpoint.map { .success($0) }
+                return endpoint.map { .success([$0]) }
             }
         }
 
-        return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<Endpoint, DNSResolutionError>? in
+        return endpoints.concurrentMap(queue: resolverQueue) { endpoint -> Result<[Endpoint], DNSResolutionError>? in
             guard let endpoint = endpoint else { return nil }
 
             if endpoint.hasHostAsIPAddress() {
-                return .success(endpoint)
+                return .success([endpoint])
             } else {
-                return Result { try DNSResolver.resolveSync(endpoint: endpoint) }
+                return Result { try DNSResolver.resolveCandidates(endpoint: endpoint) }
                     .mapError { error -> DNSResolutionError in
                         // swiftlint:disable:next force_cast
                         return error as! DNSResolutionError
@@ -108,9 +125,9 @@ extension DNSResolver {
         }
     }
 
-    private static func resolveSync(endpoint: Endpoint) throws -> Endpoint {
+    private static func resolveCandidates(endpoint: Endpoint) throws -> [Endpoint] {
         guard case .name(let name, _) = endpoint.host else {
-            return endpoint
+            return [endpoint]
         }
 
         var hints = addrinfo()
@@ -130,7 +147,7 @@ extension DNSResolver {
         }
 
         var ipv4Address: IPv4Address?
-        var ipv6Address: IPv6Address?
+        var ipv6Addresses = [IPv6Address]()
 
         var next: UnsafeMutablePointer<addrinfo>? = resultPointer
         let iterator = AnyIterator { () -> addrinfo? in
@@ -145,18 +162,34 @@ extension DNSResolver {
                     ipv4Address = maybeIpv4Address
                 }
             } else if let maybeIpv6Address = IPv6Address(addrInfo: addrInfo) {
-                let candidate = Endpoint(host: .ipv6(maybeIpv6Address), port: endpoint.port)
-                if candidate.ip4pEndpoint != nil {
-                    return candidate
-                }
-                ipv6Address = maybeIpv6Address
+                ipv6Addresses.append(maybeIpv6Address)
             }
         }
 
-        guard let resolved = preferredEndpoint(ipv4: ipv4Address, ipv6: ipv6Address, port: endpoint.port) else {
+        let candidates = preferredEndpoints(ipv4: ipv4Address, ipv6: ipv6Addresses, port: endpoint.port,
+                                            ordinaryIPv6: ipv6Addresses.last)
+        guard !candidates.isEmpty else {
             throw DNSResolutionError(errorCode: endpoint.port.rawValue == 0 ? EAI_SERVICE : EAI_NONAME, address: name)
         }
-        return resolved
+        return candidates
+    }
+
+    static func preferredEndpoints(ipv4: IPv4Address?, ipv6: [IPv6Address], port: NWEndpoint.Port,
+                                   ordinaryIPv6: IPv6Address? = nil) -> [Endpoint] {
+        var seen = Set<Endpoint>()
+        let ip4p = ipv6.map { Endpoint(host: .ipv6($0), port: port) }
+            .filter { $0.ip4pEndpoint != nil && seen.insert($0).inserted }
+        if !ip4p.isEmpty { return ip4p }
+        return preferredEndpoint(ipv4: ipv4, ipv6: ordinaryIPv6 ?? ipv6.first, port: port).map { [$0] } ?? []
+    }
+
+    static func recoveryEndpoint(candidates: [Endpoint], current: Endpoint?) -> Endpoint? {
+        // Stable ordering prevents DNS answer shuffling from starving a candidate.
+        let ip4p = candidates.filter { $0.ip4pEndpoint != nil }
+            .sorted { $0.stringRepresentation < $1.stringRepresentation }
+        guard !ip4p.isEmpty else { return candidates.first }
+        guard let index = ip4p.firstIndex(where: { $0 == current }) else { return ip4p.first }
+        return ip4p[(index + 1) % ip4p.count]
     }
 
     static func preferredEndpoint(ipv4: IPv4Address?, ipv6: IPv6Address?, port: NWEndpoint.Port) -> Endpoint? {

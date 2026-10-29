@@ -54,6 +54,38 @@ final class EndpointRecoveryTests: XCTestCase {
         XCTAssertTrue(observe(&recovery, status(tx: 444), 30))
     }
 
+    func testFrequentObservationsDoNotPostponeRecoveryWindow() {
+        var recovery = EndpointRecovery()
+        for time in stride(from: 0, to: 30, by: 5) {
+            XCTAssertFalse(observe(&recovery, status(tx: UInt64(time + 1) * 148), Double(time)))
+        }
+        XCTAssertTrue(observe(&recovery, status(tx: 10000), 30))
+        // The same backend retains its retry cooldown across further observations.
+        XCTAssertFalse(observe(&recovery, status(tx: 10148), 35))
+        XCTAssertTrue(observe(&recovery, status(tx: 10296), 45))
+    }
+
+    func testNewCandidateGetsFullResponseWindow() {
+        var recovery = EndpointRecovery()
+        XCTAssertFalse(observe(&recovery, status(tx: 148), 0))
+        XCTAssertTrue(observe(&recovery, status(tx: 296), 30))
+        recovery.didUpdateEndpoint(at: 35)
+        XCTAssertFalse(observe(&recovery, status(tx: 444), 45))
+        XCTAssertFalse(observe(&recovery, status(tx: 592), 60))
+        XCTAssertFalse(observe(&recovery, status(tx: 592), 64))
+        XCTAssertTrue(observe(&recovery, status(tx: 740), 65))
+    }
+
+    func testSuccessfulCandidateStopsRotation() {
+        var recovery = EndpointRecovery()
+        XCTAssertFalse(observe(&recovery, status(tx: 148), 0))
+        XCTAssertTrue(observe(&recovery, status(tx: 296), 30))
+        recovery.didUpdateEndpoint(at: 35)
+        XCTAssertFalse(observe(&recovery, status(rx: 92, tx: 444, handshake: 1040), 45))
+        XCTAssertEqual(recovery.pollInterval, EndpointRecovery.normalPollInterval)
+        XCTAssertFalse(observe(&recovery, status(rx: 92, tx: 444, handshake: 1040), 3600))
+    }
+
     func testUnansweredTrafficStartsTimeoutWhenSendingBegins() {
         var recovery = EndpointRecovery()
         XCTAssertFalse(observe(&recovery, status(handshake: 1), 0))

@@ -49,6 +49,7 @@ public final class DoHResolver {
 
     private let configuration: DoHConfiguration
     private let logHandler: LogHandler?
+    private let logID = UUID().uuidString.prefix(8)
 
     /// 缓存已解析的 DoH 服务器 IP
     private var resolvedDoHServerIP: String?
@@ -63,7 +64,17 @@ public final class DoHResolver {
     }
 
     private func log(_ message: String) {
-        logHandler?(message)
+        logHandler?("[\(logID)] \(message)")
+    }
+
+    private static func describePath(_ path: NWPath?) -> String {
+        guard let path = path else { return "path=unavailable" }
+        let types: [NWInterface.InterfaceType] = [.wifi, .cellular, .wiredEthernet, .loopback, .other]
+        let usedTypes = types.filter { path.usesInterfaceType($0) }.map { "\($0)" }.joined(separator: ",")
+        // Put the selected path first because the file logger limits line length.
+        return "path=\(path.debugDescription) usedTypes=[\(usedTypes)] " +
+            "local=\(String(describing: path.localEndpoint)) remote=\(String(describing: path.remoteEndpoint)) " +
+            "expensive=\(path.isExpensive) constrained=\(path.isConstrained)"
     }
 
     // MARK: - Public API
@@ -74,6 +85,11 @@ public final class DoHResolver {
     ///   - preferIPv4: 是否优先返回 IPv4 地址
     /// - Returns: 解析结果 (IPv4 地址, IPv6 地址)
     public func resolve(hostname: String, preferIPv4: Bool = true) async throws -> (ipv4: IPv4Address?, ipv6: IPv6Address?) {
+        let addresses = try await resolveAddresses(hostname: hostname)
+        return (addresses.ipv4.first, Self.preferredIPv6Address(addresses.ipv6))
+    }
+
+    private func resolveAddresses(hostname: String) async throws -> (ipv4: [IPv4Address], ipv6: [IPv6Address]) {
         log("DoH: resolving \(hostname)")
 
         guard let dohURL = configuration.effectiveURL else {
@@ -113,13 +129,12 @@ public final class DoHResolver {
         let ipv4Addresses = (try? await ipv4Task) ?? []
         let ipv6Addresses = (try? await ipv6Task) ?? []
 
-        let ipv4: IPv4Address? = ipv4Addresses.compactMap { IPv4Address($0) }.first
-        let ipv6Candidates = ipv6Addresses.compactMap { IPv6Address($0) }
-        let ipv6 = Self.preferredIPv6Address(ipv6Candidates)
+        let ipv4 = ipv4Addresses.compactMap { IPv4Address($0) }
+        let ipv6 = ipv6Addresses.compactMap { IPv6Address($0) }
 
-        log("DoH: resolved \(hostname) -> IPv4=\(ipv4.map { "\($0)" } ?? "nil"), IPv6=\(ipv6.map { "\($0)" } ?? "nil")")
+        log("DoH: resolved \(hostname) -> IPv4=\(ipv4), IPv6=\(ipv6)")
 
-        if ipv4 == nil && ipv6 == nil {
+        if ipv4.isEmpty && ipv6.isEmpty {
             log("DoH: error - no records found for \(hostname)")
             throw DoHError.noRecordsFound
         }
@@ -138,13 +153,18 @@ public final class DoHResolver {
 
     /// 同步解析域名
     public func resolveSync(hostname: String, preferIPv4: Bool = true) throws -> (ipv4: IPv4Address?, ipv6: IPv6Address?) {
+        let addresses = try resolveAddressesSync(hostname: hostname)
+        return (addresses.ipv4.first, Self.preferredIPv6Address(addresses.ipv6))
+    }
+
+    func resolveAddressesSync(hostname: String) throws -> (ipv4: [IPv4Address], ipv6: [IPv6Address]) {
         let semaphore = DispatchSemaphore(value: 0)
-        var result: (ipv4: IPv4Address?, ipv6: IPv6Address?)?
+        var result: (ipv4: [IPv4Address], ipv6: [IPv6Address])?
         var error: Error?
 
         Task {
             do {
-                result = try await resolve(hostname: hostname, preferIPv4: preferIPv4)
+                result = try await resolveAddresses(hostname: hostname)
             } catch let e {
                 error = e
             }
@@ -153,6 +173,7 @@ public final class DoHResolver {
 
         let timeoutResult = semaphore.wait(timeout: .now() + configuration.timeout * 2)
         if timeoutResult == .timedOut {
+            log("DoH: overall timeout for \(hostname) after \(configuration.timeout * 2)s; asynchronous queries may still finish")
             throw DoHError.timeout
         }
 
@@ -198,7 +219,7 @@ public final class DoHResolver {
             throw DoHError.noBootstrapIP
         }
 
-        log("DoH: resolving \(dohHost) via UDP DNS server \(bootstrapIP)")
+        log("DoH: resolving \(dohHost) via UDP DNS server \(bootstrapIP) (first of \(bootstrapIPs.count) bootstrap servers; no failover)")
 
         // 使用传统 DNS (UDP) 通过 Bootstrap IP 解析 DoH 服务器域名
         let resolvedIP = try await resolveHostnameViaUDP(hostname: dohHost, dnsServer: bootstrapIP)
@@ -209,13 +230,15 @@ public final class DoHResolver {
 
     /// 使用传统 DNS (UDP 53) 解析域名
     private func resolveHostnameViaUDP(hostname: String, dnsServer: String) async throws -> String {
+        let requestID = UUID().uuidString.prefix(8)
+        let log: LogHandler = { self.log("UDP[\(requestID)] host=\(hostname): \($0)") }
         log("DoH: UDP DNS query for \(hostname) via \(dnsServer):53")
 
         return try await withCheckedThrowingContinuation { continuation in
             let queue = DispatchQueue(label: "DoHResolver.UDP")
 
             guard let serverAddress = IPv4Address(dnsServer) else {
-                self.log("DoH: UDP DNS error - invalid server address \(dnsServer)")
+                log("DoH: UDP DNS error - invalid server address \(dnsServer)")
                 continuation.resume(throwing: DoHError.invalidConfiguration)
                 return
             }
@@ -223,74 +246,88 @@ public final class DoHResolver {
             let endpoint = NWEndpoint.hostPort(host: .ipv4(serverAddress), port: 53)
             let connection = NWConnection(to: endpoint, using: .udp)
 
+            let startedAt = ProcessInfo.processInfo.systemUptime
             var didResume = false
             let resumeOnce: (Result<String, Error>) -> Void = { result in
                 guard !didResume else { return }
                 didResume = true
+                let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt)
+                log("finished after \(elapsed)s; \(Self.describePath(connection.currentPath))")
+                connection.stateUpdateHandler = nil
+                connection.pathUpdateHandler = nil
                 connection.cancel()
                 switch result {
                 case .success(let ip):
-                    self.log("DoH: UDP DNS success - \(hostname) -> \(ip)")
+                    log("DoH: UDP DNS success - \(hostname) -> \(ip)")
                     continuation.resume(returning: ip)
                 case .failure(let error):
-                    self.log("DoH: UDP DNS failed - \(error.localizedDescription)")
+                    log("DoH: UDP DNS failed - \(error.localizedDescription)")
                     continuation.resume(throwing: error)
                 }
             }
 
             // 设置超时
             queue.asyncAfter(deadline: .now() + self.configuration.timeout) {
-                self.log("DoH: UDP DNS timeout after \(self.configuration.timeout)s")
+                guard !didResume else { return }
+                log("DoH: UDP DNS timeout after \(self.configuration.timeout)s")
                 resumeOnce(.failure(DoHError.timeout))
             }
 
+            connection.pathUpdateHandler = { path in
+                guard !didResume else { return }
+                log("path changed: \(Self.describePath(path))")
+            }
             connection.stateUpdateHandler = { state in
+                guard !didResume else { return }
+                log("state=\(state); \(Self.describePath(connection.currentPath))")
                 switch state {
                 case .ready:
-                    self.log("DoH: UDP connection ready, sending query")
+                    log("DoH: UDP connection ready, sending query")
                     // 发送 DNS 查询
                     let query = self.buildDNSQuery(hostname: hostname, type: .a)
                     connection.send(content: query, completion: .contentProcessed { error in
+                        guard !didResume else { return }
                         if let error = error {
-                            self.log("DoH: UDP send error - \(error.localizedDescription)")
+                            log("DoH: UDP send error - \(error.localizedDescription)")
                             resumeOnce(.failure(DoHError.networkError(error)))
                         }
                     })
 
                     // 接收响应
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 512) { data, _, _, error in
+                        guard !didResume else { return }
                         if let error = error {
-                            self.log("DoH: UDP receive error - \(error.localizedDescription)")
+                            log("DoH: UDP receive error - \(error.localizedDescription)")
                             resumeOnce(.failure(DoHError.networkError(error)))
                             return
                         }
 
                         guard let data = data else {
-                            self.log("DoH: UDP receive error - no data")
+                            log("DoH: UDP receive error - no data")
                             resumeOnce(.failure(DoHError.invalidResponse))
                             return
                         }
 
-                        self.log("DoH: UDP received \(data.count) bytes")
+                        log("DoH: UDP received \(data.count) bytes")
                         let addresses = self.parseDNSResponse(data: data, type: .a)
-                        self.log("DoH: UDP parsed addresses: \(addresses)")
+                        log("DoH: UDP parsed addresses: \(addresses)")
                         if let firstIP = addresses.first {
                             resumeOnce(.success(firstIP))
                         } else {
-                            self.log("DoH: UDP DNS error - no A records in response")
+                            log("DoH: UDP DNS error - no A records in response")
                             resumeOnce(.failure(DoHError.bootstrapResolutionFailed))
                         }
                     }
 
                 case .failed(let error):
-                    self.log("DoH: UDP connection failed - \(error.localizedDescription)")
+                    log("DoH: UDP connection failed - \(error.localizedDescription)")
                     resumeOnce(.failure(DoHError.networkError(error)))
 
                 case .cancelled:
                     break
 
                 case .waiting(let error):
-                    self.log("DoH: UDP connection waiting - \(error.localizedDescription)")
+                    log("DoH: UDP connection waiting - \(error.localizedDescription)")
 
                 default:
                     break
@@ -306,6 +343,8 @@ public final class DoHResolver {
     /// 执行 DoH DNS 查询 (使用 Network.framework 支持自定义 SNI)
     private func queryDNS(hostname: String, type: DNSRecordType, dohURL: URL, dohServerIP: String, originalHost: String) async throws -> [String] {
         let typeStr = type == .a ? "A" : "AAAA"
+        let requestID = UUID().uuidString.prefix(8)
+        let log: LogHandler = { self.log("HTTPS[\(requestID)] host=\(hostname) type=\(typeStr): \($0)") }
         log("DoH: HTTPS query \(typeStr) for \(hostname)")
 
         // 构建 DNS 查询包
@@ -334,36 +373,50 @@ public final class DoHResolver {
             } else if let ipv6 = IPv6Address(dohServerIP) {
                 endpoint = NWEndpoint.hostPort(host: .ipv6(ipv6), port: NWEndpoint.Port(integerLiteral: UInt16(port)))
             } else {
-                self.log("DoH: HTTPS error - invalid server IP \(dohServerIP)")
+                log("DoH: HTTPS error - invalid server IP \(dohServerIP)")
                 continuation.resume(throwing: DoHError.invalidConfiguration)
                 return
             }
 
             let connection = NWConnection(to: endpoint, using: params)
 
+            let startedAt = ProcessInfo.processInfo.systemUptime
             var didResume = false
             let resumeOnce: (Result<[String], Error>) -> Void = { result in
                 guard !didResume else { return }
                 didResume = true
+                let elapsed = String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt)
+                log("finished after \(elapsed)s; \(Self.describePath(connection.currentPath))")
+                connection.stateUpdateHandler = nil
+                connection.pathUpdateHandler = nil
                 connection.cancel()
                 switch result {
                 case .success(let addresses):
+                    log("success: records=\(addresses)")
                     continuation.resume(returning: addresses)
                 case .failure(let error):
+                    log("failed: \(error)")
                     continuation.resume(throwing: error)
                 }
             }
 
             // 设置超时
             queue.asyncAfter(deadline: .now() + self.configuration.timeout) {
-                self.log("DoH: HTTPS timeout after \(self.configuration.timeout)s")
+                guard !didResume else { return }
+                log("DoH: HTTPS timeout after \(self.configuration.timeout)s")
                 resumeOnce(.failure(DoHError.timeout))
             }
 
+            connection.pathUpdateHandler = { path in
+                guard !didResume else { return }
+                log("path changed: \(Self.describePath(path))")
+            }
             connection.stateUpdateHandler = { state in
+                guard !didResume else { return }
+                log("state=\(state); \(Self.describePath(connection.currentPath))")
                 switch state {
                 case .ready:
-                    self.log("DoH: HTTPS TLS connection ready")
+                    log("DoH: HTTPS TLS connection ready")
 
                     // 构建 HTTP 请求
                     var httpRequest = "POST \(path) HTTP/1.1\r\n"
@@ -379,23 +432,24 @@ public final class DoHResolver {
 
                     // 发送请求
                     connection.send(content: requestData, completion: .contentProcessed { error in
+                        guard !didResume else { return }
                         if let error = error {
-                            self.log("DoH: HTTPS send error - \(error.localizedDescription)")
+                            log("DoH: HTTPS send error - \(error.localizedDescription)")
                             resumeOnce(.failure(DoHError.networkError(error)))
                         }
                     })
 
                     // 接收响应
-                    self.receiveHTTPResponse(connection: connection, type: type) { result in
+                    self.receiveHTTPResponse(connection: connection, type: type, log: log) { result in
                         resumeOnce(result)
                     }
 
                 case .failed(let error):
-                    self.log("DoH: HTTPS connection failed - \(error.localizedDescription)")
+                    log("DoH: HTTPS connection failed - \(error.localizedDescription)")
                     resumeOnce(.failure(DoHError.networkError(error)))
 
                 case .waiting(let error):
-                    self.log("DoH: HTTPS connection waiting - \(error.localizedDescription)")
+                    log("DoH: HTTPS connection waiting - \(error.localizedDescription)")
 
                 default:
                     break
@@ -407,13 +461,12 @@ public final class DoHResolver {
     }
 
     /// 接收 HTTP 响应
-    private func receiveHTTPResponse(connection: NWConnection, type: DNSRecordType, completion: @escaping (Result<[String], Error>) -> Void) {
+    private func receiveHTTPResponse(connection: NWConnection, type: DNSRecordType, log: @escaping LogHandler, completion: @escaping (Result<[String], Error>) -> Void) {
         var receivedData = Data()
 
         func receiveMore() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
                 if let error = error {
-                    self.log("DoH: HTTPS receive error - \(error.localizedDescription)")
                     completion(.failure(DoHError.networkError(error)))
                     return
                 }
@@ -424,8 +477,8 @@ public final class DoHResolver {
 
                 if isComplete {
                     // 解析 HTTP 响应
-                    self.log("DoH: HTTPS received \(receivedData.count) bytes total")
-                    self.parseHTTPResponse(data: receivedData, type: type, completion: completion)
+                    log("DoH: HTTPS received \(receivedData.count) bytes total")
+                    self.parseHTTPResponse(data: receivedData, type: type, log: log, completion: completion)
                 } else {
                     receiveMore()
                 }
@@ -436,7 +489,7 @@ public final class DoHResolver {
     }
 
     /// 解析 HTTP 响应
-    private func parseHTTPResponse(data: Data, type: DNSRecordType, completion: @escaping (Result<[String], Error>) -> Void) {
+    private func parseHTTPResponse(data: Data, type: DNSRecordType, log: LogHandler, completion: @escaping (Result<[String], Error>) -> Void) {
         // 查找 HTTP body (空行分隔)
         guard let headerEndRange = data.range(of: Data("\r\n\r\n".utf8)) else {
             log("DoH: HTTPS error - cannot find header end")

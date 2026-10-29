@@ -8,6 +8,8 @@
 ## Build generated
 build/
 DerivedData
+# Versioned local Xcode caches (for example, 27.1-27A9275/Xcode).
+/[0-9]*-*/Xcode/
 
 ## Various settings
 *.pbxuser
@@ -46,6 +48,7 @@ output
 
 # Wireguard specific
 Sources/WireGuardApp/Config/Developer.xcconfig
+/log/
 
 # Vim
 .*.sw*

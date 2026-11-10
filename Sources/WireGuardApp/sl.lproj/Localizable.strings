@@ -9,7 +9,7 @@
 
 // Tunnels list UI
 
-"tunnelsListTitle" = "WireGuard";
+"tunnelsListTitle" = "WG-IP4P";
 "tunnelsListSettingsButtonTitle" = "Nastavitve";
 "tunnelsListCenteredAddTunnelButtonTitle" = "Dodaj tunel";
 "tunnelsListSwipeDeleteButtonTitle" = "Izbriši";
@@ -203,7 +203,7 @@
 "settingsViewTitle" = "Nastavitve";
 
 "settingsSectionTitleAbout" = "O programu";
-"settingsVersionKeyWireGuardForIOS" = "WireGuard za iOS";
+"settingsVersionKeyWireGuardForIOS" = "WG-IP4P za iOS";
 "settingsVersionKeyWireGuardGoBackend" = "Verzija wireguard-go";
 
 "settingsSectionTitleExportConfigurations" = "Izvozi konfiguracije";
@@ -294,16 +294,16 @@
 "macMenuNetworks (%@)" = "Omrežja: %@";
 "macMenuNetworksNone" = "Ni omrežij";
 
-"macMenuTitle" = "WireGuard";
+"macMenuTitle" = "WG-IP4P";
 "macMenuManageTunnels" = "Upravljaj tunele";
 "macMenuImportTunnels" = "Uvozi tunele iz datoteke …";
 "macMenuAddEmptyTunnel" = "Dodaj prazen tunel …";
 "macMenuViewLog" = "Pokaži dnevnik";
 "macMenuExportTunnels" = "Izvozi tunele v datoteko zip …";
-"macMenuAbout" = "O aplikaciji WireGuard";
-"macMenuQuit" = "Končaj WireGuard";
+"macMenuAbout" = "O aplikaciji WG-IP4P";
+"macMenuQuit" = "Končaj WG-IP4P";
 
-"macMenuHideApp" = "Skrij WireGuard";
+"macMenuHideApp" = "Skrij WG-IP4P";
 "macMenuHideOtherApps" = "Skrij druge";
 "macMenuShowAllApps" = "Prikaži vse";
 
@@ -327,7 +327,7 @@
 
 // Mac manage tunnels window
 
-"macWindowTitleManageTunnels" = "Upravljaj tunele WireGuard";
+"macWindowTitleManageTunnels" = "Upravljaj tunele WG-IP4P";
 
 "macDeleteTunnelConfirmationAlertMessage (%@)" = "Ali ste prepričani, da želite izbrisati \"%@\"?";
 "macDeleteMultipleTunnelsConfirmationAlertMessage (%d)" = "Ali ste prepričani, da želite izbrisati izbrane tunele?";
@@ -405,13 +405,13 @@
 
 // Mac alert
 
-"macConfirmAndQuitAlertMessage" = "Ali želite zapreti upravljalca tunelov ali končati WireGuard v celoti?";
-"macConfirmAndQuitAlertInfo" = "Če zaprete upravljalca tunelov, bo WireGuard še naprej na voljo preko ikone v meniju.";
-"macConfirmAndQuitInfoWithActiveTunnel (%@)" = "Če zaprete upravljalca tunelov, bo WireGuard še naprej na voljo preko ikone v meniju.\n\nPomnite: če zaprete WireGuard bo trenutni aktiven tunel (\"%@\") ostal aktiven dokler ga ne deaktivirate preko te aplikacije ali preko omrežne plošče v sistemskih nastavitvah.";
-"macConfirmAndQuitAlertQuitWireGuard" = "Končaj WireGuard";
+"macConfirmAndQuitAlertMessage" = "Ali želite zapreti upravljalca tunelov ali končati WG-IP4P v celoti?";
+"macConfirmAndQuitAlertInfo" = "Če zaprete upravljalca tunelov, bo WG-IP4P še naprej na voljo preko ikone v meniju.";
+"macConfirmAndQuitInfoWithActiveTunnel (%@)" = "Če zaprete upravljalca tunelov, bo WG-IP4P še naprej na voljo preko ikone v meniju.\n\nPomnite: če zaprete WG-IP4P bo trenutni aktiven tunel (\"%@\") ostal aktiven dokler ga ne deaktivirate preko te aplikacije ali preko omrežne plošče v sistemskih nastavitvah.";
+"macConfirmAndQuitAlertQuitWireGuard" = "Končaj WG-IP4P";
 "macConfirmAndQuitAlertCloseWindow" = "Zapri upravljalca tunelov";
 
-"macAppExitingWithActiveTunnelMessage" = "WireGuard se končuje z aktivnim tunelom";
+"macAppExitingWithActiveTunnelMessage" = "WG-IP4P se končuje z aktivnim tunelom";
 "macAppExitingWithActiveTunnelInfo" = "Tunel bo ostal aktiven po izhodu. Lahko ga onemogočite po ponovnem odprtju aplikacije ali preko omrežne plošče v sistemskih nastavitvah.";
 
 // Mac tooltip
@@ -434,7 +434,7 @@
 
 // Mac App Store updating alert
 
-"macAppStoreUpdatingAlertMessage" = "App Store bi rad posodobil WireGuard";
+"macAppStoreUpdatingAlertMessage" = "App Store bi rad posodobil WG-IP4P";
 "macAppStoreUpdatingAlertInfoWithOnDemand (%@)" = "Onemogočite aktivacijo na zahtevo za tunel \"%@\", ga deaktivirajte in nadaljujte posodobitev iz trgovine App Store.";
 "macAppStoreUpdatingAlertInfoWithoutOnDemand (%@)" = "Prosimo deaktivirajte tunel \"%@\" in nadaljuje posodobitev v trgovini App Store.";
 

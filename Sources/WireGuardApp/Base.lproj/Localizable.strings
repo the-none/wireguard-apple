@@ -9,7 +9,7 @@
 
 // Tunnels list UI
 
-"tunnelsListTitle" = "WireGuard";
+"tunnelsListTitle" = "WG-IP4P";
 "tunnelsListSettingsButtonTitle" = "Settings";
 "tunnelsListCenteredAddTunnelButtonTitle" = "Add a tunnel";
 "tunnelsListSwipeDeleteButtonTitle" = "Delete";
@@ -227,7 +227,7 @@
 "settingsViewTitle" = "Settings";
 
 "settingsSectionTitleAbout" = "About";
-"settingsVersionKeyWireGuardForIOS" = "WireGuard for iOS";
+"settingsVersionKeyWireGuardForIOS" = "WG-IP4P for iOS";
 "settingsVersionKeyWireGuardGoBackend" = "WireGuard Go Backend";
 
 "settingsSectionTitleExportConfigurations" = "Export configurations";
@@ -318,17 +318,17 @@
 "macMenuNetworks (%@)" = "Networks: %@";
 "macMenuNetworksNone" = "Networks: None";
 
-"macMenuTitle" = "WireGuard";
+"macMenuTitle" = "WG-IP4P";
 "macTunnelsMenuTitle" = "Tunnels";
 "macMenuManageTunnels" = "Manage Tunnels";
 "macMenuImportTunnels" = "Import Tunnel(s) from File…";
 "macMenuAddEmptyTunnel" = "Add Empty Tunnel…";
 "macMenuViewLog" = "View Log";
 "macMenuExportTunnels" = "Export Tunnels to Zip…";
-"macMenuAbout" = "About WireGuard";
-"macMenuQuit" = "Quit WireGuard";
+"macMenuAbout" = "About WG-IP4P";
+"macMenuQuit" = "Quit WG-IP4P";
 
-"macMenuHideApp" = "Hide WireGuard";
+"macMenuHideApp" = "Hide WG-IP4P";
 "macMenuHideOtherApps" = "Hide Others";
 "macMenuShowAllApps" = "Show All";
 
@@ -352,7 +352,7 @@
 
 // Mac manage tunnels window
 
-"macWindowTitleManageTunnels" = "Manage WireGuard Tunnels";
+"macWindowTitleManageTunnels" = "Manage WG-IP4P Tunnels";
 
 "macDeleteTunnelConfirmationAlertMessage (%@)" = "Are you sure you want to delete ‘%@’?";
 "macDeleteMultipleTunnelsConfirmationAlertMessage (%d)" = "Are you sure you want to delete %d tunnels?";
@@ -430,13 +430,13 @@
 
 // Mac alert
 
-"macConfirmAndQuitAlertMessage" = "Do you want to close the tunnels manager or quit WireGuard entirely?";
-"macConfirmAndQuitAlertInfo" = "If you close the tunnels manager, WireGuard will continue to be available from the menu bar icon.";
-"macConfirmAndQuitInfoWithActiveTunnel (%@)" = "If you close the tunnels manager, WireGuard will continue to be available from the menu bar icon.\n\nNote that if you quit WireGuard entirely the currently active tunnel ('%@') will still remain active until you deactivate it from this application or through the Network panel in System Preferences.";
-"macConfirmAndQuitAlertQuitWireGuard" = "Quit WireGuard";
+"macConfirmAndQuitAlertMessage" = "Do you want to close the tunnels manager or quit WG-IP4P entirely?";
+"macConfirmAndQuitAlertInfo" = "If you close the tunnels manager, WG-IP4P will continue to be available from the menu bar icon.";
+"macConfirmAndQuitInfoWithActiveTunnel (%@)" = "If you close the tunnels manager, WG-IP4P will continue to be available from the menu bar icon.\n\nNote that if you quit WG-IP4P entirely the currently active tunnel ('%@') will still remain active until you deactivate it from this application or through the Network panel in System Preferences.";
+"macConfirmAndQuitAlertQuitWireGuard" = "Quit WG-IP4P";
 "macConfirmAndQuitAlertCloseWindow" = "Close Tunnels Manager";
 
-"macAppExitingWithActiveTunnelMessage" = "WireGuard is exiting with an active tunnel";
+"macAppExitingWithActiveTunnelMessage" = "WG-IP4P is exiting with an active tunnel";
 "macAppExitingWithActiveTunnelInfo" = "The tunnel will remain active after exiting. You may disable it by reopening this application or through the Network panel in System Preferences.";
 
 // Mac tooltip
@@ -459,7 +459,7 @@
 
 // Mac App Store updating alert
 
-"macAppStoreUpdatingAlertMessage" = "App Store would like to update WireGuard";
+"macAppStoreUpdatingAlertMessage" = "App Store would like to update WG-IP4P";
 "macAppStoreUpdatingAlertInfoWithOnDemand (%@)" = "Please disable on-demand for tunnel ‘%@’, deactivate it, and then continue updating in App Store.";
 "macAppStoreUpdatingAlertInfoWithoutOnDemand (%@)" = "Please deactivate tunnel ‘%@’ and then continue updating in App Store.";
 
